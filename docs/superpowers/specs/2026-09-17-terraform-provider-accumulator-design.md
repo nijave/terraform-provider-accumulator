@@ -64,15 +64,18 @@ is in maintenance mode, and the framework is what the sibling
 
 **OpenTofu is the primary target.** The support floor is OpenTofu ≥ 1.10, which
 is the oldest release line still receiving security support per
-<https://endoflife.date/opentofu> (as of 2026-08-21: 1.10, 1.11, and 1.12). The
-code uses no OpenTofu-only or Terraform-only features, so Terraform ≥ 1.10 works
-too, but Terraform is not tested and is not the reference platform: CI drives
-`tofu` exclusively, which keeps BUSL-licensed binaries out of the build.
+<https://endoflife.date/opentofu> (as of 2026-09-17: 1.10 and 1.12). From 1.11
+onwards each release line's security support is aligned to the Go release
+cycle, so 1.11 ended with Go 1.25 on 2026-08-19. The code uses no OpenTofu-only
+or Terraform-only features, so Terraform ≥ 1.10 works too, but Terraform is not
+tested and is not the reference platform: CI drives `tofu` exclusively, which
+keeps BUSL-licensed binaries out of the build.
 
 Provider address: `registry.opentofu.org/nijave/accumulator`; short name in
 configuration and in the test factories: `accumulator`. Module path:
 `github.com/nijave/terraform-provider-accumulator`. Go directive `go 1.25.12`
-(matching pki); the build toolchain here is Go 1.26.8.
+(matching pki, and above the `go 1.25.8` that terraform-plugin-testing v1.16.0
+requires); the build toolchain here is Go 1.26.8.
 
 There is no OpenTofu fork of `terraform-plugin-framework`, `terraform-plugin-go`,
 `terraform-plugin-testing`, or `terraform-plugin-docs`, and none is needed.
@@ -88,7 +91,7 @@ terraform-provider-accumulator/
       set.go                           # Merge
       id.go                            # HashID
       import.go                        # ParseImport
-      boundary_test.go                 # fails the build if a terraform-plugin-* import appears
+      boundary_test.go                 # fails `go test` if a terraform-plugin-* import appears
       *_test.go
     provider/
       provider.go                      # provider.New, Metadata, Schema, Resources
@@ -116,7 +119,7 @@ terraform-provider-accumulator/
     gen-schema.sh
   GNUmakefile
   .goreleaser.yml
-  terraform-registry-manifest.json     # {"protocol_versions": ["6.0"]}
+  terraform-registry-manifest.json     # {"version": 1, "metadata": {"protocol_versions": ["6.0"]}}
   .github/workflows/test.yml
   .github/workflows/release.yml
   .github/dependabot.yml
@@ -150,10 +153,11 @@ Invariants that acceptance tests assert:
 
 1. A second plan after a successful apply is empty (no attribute recomputes on
    refresh).
-2. `inputs = []` never erases history; only `length`, `triggers_reset`, or
-   `triggers_replacement` can.
+2. `inputs = []` never erases history; only `length` (list only),
+   `triggers_reset`, or `triggers_replacement` can.
 3. `outputs` is always at most `length` elements for `accumulator_list`.
-4. `accumulator_set` never contains a value twice, and never forgets a value.
+4. `accumulator_set` never contains a value twice, and never forgets a value
+   except on a `triggers_reset` change or a replacement.
 
 ## 5. Resource schemas
 
@@ -280,6 +284,16 @@ Append(outputs, inputs []string, length int) []string
 // stable for deterministic state.
 Merge(outputs, inputs []string) []string
 ```
+
+### 6.4 Read and Delete
+
+Both are structural no-ops, because state is the only store. The framework
+copies the prior state into the Read response before calling `Read`, so an
+empty method returns it unchanged and refresh can never perturb an attribute;
+that is what makes invariant 1 hold. There is nothing external to destroy, and
+the framework removes the resource from state automatically when `Delete`
+returns without errors, so an empty method is the whole implementation there
+too.
 
 ## 7. Resource identity
 
@@ -412,6 +426,12 @@ and rewrites the `registry.opentofu.org/hashicorp/accumulator` key to the bare
 `accumulator` name that `tfplugindocs --providers-schema` expects. Using
 OpenTofu for this step keeps `terraform` out of the toolchain.
 
+The script inherits pki's `OpenTofu >= 1.11` requirement, a build-time floor
+above the provider's 1.10 support floor. Schema export output changes when the
+exporting CLI crosses a feature threshold, which is the doc drift that pushed
+pki off a downloaded Terraform, so CI pins the exact `tofu` version (§12);
+local `make docs` works with any `tofu` ≥ 1.11.
+
 `docs/superpowers/` is hand-written and is not an input or output of
 generation. The generate job's dirty-tree check would catch an accidental change
 to it, and `tools/schema.json` is gitignored so exporting the schema is not
@@ -430,7 +450,9 @@ and `TF_ACC_PROVIDER_HOST=registry.opentofu.org`.
 
 - **build** — `go build`, `gofmt -l` must be empty, `go vet`.
 - **unit** — `go test -v -cover ./internal/...`.
-- **generate** — install OpenTofu, run `make docs`, fail if the tree is dirty.
+- **generate** — install a pinned OpenTofu (≥ 1.11, what `tools/gen-schema.sh`
+  requires; pki pins `1.12.4` via `opentofu/setup-opentofu@v2`), run
+  `make docs`, fail if the tree is dirty.
 - **acceptance** — matrix `tofu` `1.10.*` and `1.12.*` (oldest supported line
   and newest), `go test -v -cover ./internal/provider/` with the three `TF_ACC*`
   environment variables set.
