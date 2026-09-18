@@ -3,6 +3,7 @@
 package provider_test
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
-	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 
 	"github.com/nijave/terraform-provider-accumulator/internal/provider"
 )
@@ -57,21 +57,38 @@ func testAccPreCheck(t *testing.T) {
 	}
 }
 
-// TestProviderSchema is a unit test -- no TF_ACC required -- that catches a
-// malformed schema at `go test` time instead of at `tofu plan` time. Every
-// resource added in a later task is validated by it automatically, because it
-// walks whatever the provider registers. Task 8 extends the config to plan one
-// of each resource.
+// TestProviderSchema validates the whole provider schema without a Terraform
+// CLI and without TF_ACC. It talks to the protocol 6 server directly rather
+// than going through resource.Test, which would default-discover or download a
+// Terraform binary (terraform-plugin-testing's plugintest.DiscoverConfig). Every
+// resource a later task registers is validated automatically, because the
+// framework runs Schema.ValidateImplementation on each one.
 func TestProviderSchema(t *testing.T) {
 	t.Parallel()
-	resource.Test(t, resource.TestCase{
-		IsUnitTest:               true,
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{{
-			Config:   `provider "accumulator" {}`,
-			PlanOnly: true,
-		}},
-	})
+
+	server, err := providerserver.NewProtocol6WithError(provider.New("test")())()
+	if err != nil {
+		t.Fatalf("creating the protocol 6 server: %v", err)
+	}
+
+	resp, err := server.GetProviderSchema(context.Background(), &tfprotov6.GetProviderSchemaRequest{})
+	if err != nil {
+		t.Fatalf("GetProviderSchema returned an error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("GetProviderSchema returned a nil response")
+	}
+	if len(resp.Diagnostics) != 0 {
+		t.Fatalf("provider schema diagnostics: %+v", resp.Diagnostics)
+	}
+	if len(resp.ResourceSchemas) != 0 {
+		t.Fatalf("provider registers %d resources, want 0 for now; later tasks add them", len(resp.ResourceSchemas))
+	}
+	// Keep the schema genuinely non-empty so this test cannot pass against an
+	// unregistered provider that returns nothing at all.
+	if resp.Provider == nil {
+		t.Fatal("GetProviderSchema returned no provider schema")
+	}
 }
 
 // TestUserFacingStringsUseEmDashes pins the house style: Go comments in this
