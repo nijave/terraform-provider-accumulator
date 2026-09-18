@@ -76,8 +76,11 @@ jobs:
         run: make docs
       - name: Check for uncommitted changes
         run: |
-          git diff --compact-summary --exit-code || \
-            (echo; echo "Generated documentation is out of date. Run 'make docs' and commit the result."; exit 1)
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Generated documentation is out of date. Run 'make docs' and commit the result." >&2
+            git status --short
+            exit 1
+          fi
 
   acceptance:
     name: Acceptance (OpenTofu ${{ matrix.tofu }})
