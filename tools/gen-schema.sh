@@ -49,3 +49,15 @@ EOF
 TF_CLI_CONFIG_FILE="$workdir/dev.tfrc" tofu -chdir="$workdir/work" providers schema -json \
   | sed 's#"registry\.opentofu\.org/hashicorp/accumulator"#"accumulator"#' \
   > schema.json
+
+# Guard the rewrite above. If OpenTofu ever emits the address under a different
+# host or namespace, the sed silently no-ops and tfplugindocs later fails with a
+# schema-lookup error that says nothing about the real cause. Fail here instead.
+if ! grep -q '"accumulator"' schema.json; then
+  echo "schema.json does not contain the bare provider name 'accumulator'; the registry rewrite in tools/gen-schema.sh did not match" >&2
+  exit 1
+fi
+if grep -q 'registry\.opentofu\.org/hashicorp/accumulator' schema.json; then
+  echo "schema.json still contains the registry-qualified provider address; the registry rewrite in tools/gen-schema.sh did not match" >&2
+  exit 1
+fi
