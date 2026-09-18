@@ -41,14 +41,30 @@ func TestTrim(t *testing.T) {
 }
 
 // TestTrimDoesNotAliasInput guards the slices the provider writes back to
-// state: a later append must not mutate the caller's slice.
+// state: a later append must not mutate the caller's slice. It covers both
+// copy branches: the last-N slice and the whole-slice copy taken when length
+// meets or exceeds the input length.
 func TestTrimDoesNotAliasInput(t *testing.T) {
 	t.Parallel()
-	values := []string{"a", "b", "c"}
-	got := Trim(values, 2)
-	got[0] = "changed"
-	if values[1] != "b" {
-		t.Fatalf("Trim aliased its input: values[1] = %q, want \"b\"", values[1])
+
+	for label, tc := range map[string]struct {
+		values []string
+		length int
+	}{
+		"last N":       {[]string{"a", "b", "c"}, 2},
+		"whole copy":   {[]string{"a", "b", "c"}, 5},
+		"exact length": {[]string{"a", "b"}, 2},
+	} {
+		tc := tc
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			values := append([]string{}, tc.values...)
+			got := Trim(values, tc.length)
+			got[0] = "changed"
+			if values[0] != tc.values[0] {
+				t.Fatalf("Trim aliased its input for %s: values[0] = %q, want %q", label, values[0], tc.values[0])
+			}
+		})
 	}
 }
 

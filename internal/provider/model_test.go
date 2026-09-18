@@ -121,3 +121,27 @@ func TestStringsFromSetNullIsEmpty(t *testing.T) {
 		t.Fatalf("stringsFromSet(null) = %v, want nil", got)
 	}
 }
+
+// TestStringsFromUnknownIsEmpty pins the other absent case. At apply time a
+// value is known, so this branch is defensive, but it must not raise a
+// diagnostic or dereference an unknown element.
+func TestStringsFromUnknownIsEmpty(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	list, diags := stringsFromList(ctx, types.ListUnknown(types.StringType))
+	if diags.HasError() {
+		t.Fatalf("stringsFromList(unknown): %v", diags.Errors())
+	}
+	if list != nil {
+		t.Fatalf("stringsFromList(unknown) = %v, want nil", list)
+	}
+
+	set, diags := stringsFromSet(ctx, types.SetUnknown(types.StringType))
+	if diags.HasError() {
+		t.Fatalf("stringsFromSet(unknown): %v", diags.Errors())
+	}
+	if set != nil {
+		t.Fatalf("stringsFromSet(unknown) = %v, want nil", set)
+	}
+}
