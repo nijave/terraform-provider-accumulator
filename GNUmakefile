@@ -32,3 +32,8 @@ release:
 	@test $${RELEASE_VERSION?Please set environment variable RELEASE_VERSION}
 	@git tag $$RELEASE_VERSION
 	@git push origin $$RELEASE_VERSION
+
+.PHONY: docs
+docs:
+	./tools/gen-schema.sh
+	cd tools && go generate ./...

@@ -1,0 +1,43 @@
+# terraform-provider-accumulator
+
+Resources that accumulate a value over successive applies while keeping a fixed
+history length. The accumulated history lives in Terraform/OpenTofu state, so
+there is no endpoint, no credential, and no external store to stand up: the
+provider is two resources and a small amount of pure list and set logic.
+
+## Example
+
+```hcl
+resource "accumulator_list" "recent_deploys" {
+  inputs = [var.deploy_sha]
+  length = 5
+}
+
+output "recent_deploys" {
+  value = accumulator_list.recent_deploys.outputs
+}
+```
+
+Each apply that changes `inputs` appends the new value; the list keeps only the
+most recent `length` entries.
+
+## Requirements
+
+- OpenTofu >= 1.10 (the primary target, and what CI tests) or Terraform >= 1.10.
+  Terraform is expected to work but is not tested.
+- Go >= 1.25 to build.
+
+## History lives in state
+
+`terraform state rm`, moving a resource between workspaces or state files, and
+state loss all discard the accumulated history. `inputs` is stored in state, so
+`tofu plan` and `tofu state show` expose it: do not accumulate secrets.
+
+## License
+
+GPL-3.0-or-later. Every dependency is GPL-compatible (MPL-2.0, BSD-3-Clause,
+MIT, or Apache-2.0).
+
+---
+
+{{ .SchemaMarkdown }}
