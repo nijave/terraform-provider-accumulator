@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package provider
+
+import (
+	"context"
+
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/nijave/terraform-provider-accumulator/internal/accumulate"
+)
+
+var _ resource.Resource = (*setResource)(nil)
+
+// setResource accumulates inputs across applies into a deduplicated set. State
+// is the only store, so Read and Delete are no-ops.
+type setResource struct{}
+
+// NewSetResource returns the accumulator_set resource.
+func NewSetResource() resource.Resource {
+	return &setResource{}
+}
+
+// setResourceModel is accumulator_set's state model.
+type setResourceModel struct {
+	Inputs              types.List   `tfsdk:"inputs"`
+	TriggersReset       types.String `tfsdk:"triggers_reset"`
+	TriggersReplacement types.String `tfsdk:"triggers_replacement"`
+	Outputs             types.Set    `tfsdk:"outputs"`
+	ID                  types.String `tfsdk:"id"`
+}
+
+func (r *setResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_set"
+}
+
+func (r *setResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		MarkdownDescription: "Accumulates `inputs` across applies into a deduplicated `outputs` set. " +
+			"Every value ever seen is retained once, in the order it was first observed, and a value " +
+			"is only forgotten by a `triggers_reset` change or a replacement. `inputs` is a list, " +
+			"matching the shape users write in configuration; order does not affect the result because " +
+			"the values are unioned.",
+		Attributes: map[string]schema.Attribute{
+			"inputs": schema.ListAttribute{
+				Required:    true,
+				ElementType: types.StringType,
+				MarkdownDescription: "The values to accumulate. Terraform stores `inputs` in state so " +
+					"the provider can compare the planned list against the previous apply's list.",
+			},
+			"triggers_reset": schema.StringAttribute{
+				Optional: true,
+				MarkdownDescription: "Change this value to discard the accumulated set and reseed " +
+					"`outputs` from `inputs`, forgetting every value seen before the change. Any change " +
+					"counts, including from null to a value. Leave it null for no reset.",
+			},
+			"triggers_replacement": schema.StringAttribute{
+				Optional: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				MarkdownDescription: "Change this value to force a replacement (destroy and recreate), " +
+					"which reseeds `outputs` from `inputs`. Any change counts, including from null to a " +
+					"value. Leave it null for no replacement.",
+			},
+			"outputs": schema.SetAttribute{
+				Computed:    true,
+				ElementType: types.StringType,
+				MarkdownDescription: "Every value ever accumulated, each appearing once. Computed; " +
+					"never configured. Deliberately has no `UseStateForUnknown`: it must plan as unknown " +
+					"whenever an input changes, because the applied value depends on the prior state.",
+			},
+			"id": schema.StringAttribute{
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+				MarkdownDescription: "A stable identifier: the lowercase hex SHA-256 of the canonical " +
+					"JSON encoding of the `inputs` present when the resource was created. Stable across " +
+					"in-place updates; recomputed on replacement.",
+			},
+		},
+	}
+}
+
+// Create seeds outputs from the planned inputs. It also runs after a
+// replacement, which is what makes triggers_replacement reseed.
+func (r *setResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan setResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	inputs, d := stringsFromList(ctx, plan.Inputs)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	outputs, d := setFromStrings(ctx, accumulate.Merge(nil, inputs))
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	plan.Outputs = outputs
+	plan.ID = types.StringValue(accumulate.HashID(inputs))
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// Read is a structural no-op, for the same reason as accumulator_list's: the
+// framework copies prior state into the response, so a refresh cannot perturb
+// an attribute.
+func (r *setResource) Read(_ context.Context, _ resource.ReadRequest, _ *resource.ReadResponse) {
+}
+
+// Update applies the accumulation algorithm from spec section 6.2. No inputs
+// comparison is needed: union is idempotent, so applying it whenever Update
+// runs is correct, and Update does not run when nothing changed.
+func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state setResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	planInputs, d := stringsFromList(ctx, plan.Inputs)
+	resp.Diagnostics.Append(d...)
+	stateOutputs, d := stringsFromSet(ctx, state.Outputs)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var merged []string
+	if !plan.TriggersReset.Equal(state.TriggersReset) {
+		// Reset: discard history and reseed from the planned inputs.
+		merged = accumulate.Merge(nil, planInputs)
+	} else {
+		merged = accumulate.Merge(stateOutputs, planInputs)
+	}
+
+	outputs, d := setFromStrings(ctx, merged)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	plan.Outputs = outputs
+	plan.ID = state.ID
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// Delete is a no-op. The framework removes the resource from state and there is
+// nothing external to tear down.
+func (r *setResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
+}

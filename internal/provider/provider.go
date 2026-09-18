@@ -55,6 +55,7 @@ func (p *accumulatorProvider) Configure(_ context.Context, _ provider.ConfigureR
 func (p *accumulatorProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewListResource,
+		NewSetResource,
 	}
 }
 
