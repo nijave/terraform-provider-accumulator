@@ -1,0 +1,204 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package provider_test
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-framework/providerserver"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+
+	"github.com/nijave/terraform-provider-accumulator/internal/provider"
+)
+
+// testAccProtoV6ProviderFactories serves the provider in-process over protocol
+// 6. Every acceptance test uses this; there is no external provider to install
+// and no registry lookup.
+var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
+	"accumulator": providerserver.NewProtocol6WithError(provider.New("test")()),
+}
+
+// testAccPreCheck fails fast with an actionable message when the harness is
+// misconfigured, rather than letting terraform-plugin-testing download a
+// Terraform binary. There are no credentials to check: every resource in this
+// provider is self-contained.
+func testAccPreCheck(t *testing.T) {
+	t.Helper()
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("TF_ACC is not set; skipping the acceptance test")
+	}
+	path := os.Getenv("TF_ACC_TERRAFORM_PATH")
+	if path == "" {
+		t.Fatal("TF_ACC_TERRAFORM_PATH is not set. Run `make testacc`, which points it at the tofu binary. " +
+			"Without it the harness falls back to downloading Terraform, which is not the tested platform.")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("TF_ACC_TERRAFORM_PATH=%q is not usable: %v", path, err)
+	}
+	// Without this, terraform-plugin-testing pairs its default host
+	// registry.terraform.io with the legacy "-" namespace it registers for
+	// reattach, and OpenTofu refuses the combination with a message about
+	// provider address parsing that says nothing about the real cause. Fail
+	// here instead, where the message can name the fix.
+	if got := os.Getenv("TF_ACC_PROVIDER_HOST"); got != "registry.opentofu.org" {
+		t.Fatalf("TF_ACC_PROVIDER_HOST is %q, want \"registry.opentofu.org\". Run `make testacc`, which "+
+			"sets it. Without it terraform-plugin-testing pairs its default registry.terraform.io host "+
+			"with the legacy \"-\" namespace, and OpenTofu rejects that pairing before the provider is "+
+			"ever reached.", got)
+	}
+}
+
+// TestProviderSchema is a unit test -- no TF_ACC required -- that catches a
+// malformed schema at `go test` time instead of at `tofu plan` time. Every
+// resource added in a later task is validated by it automatically, because it
+// walks whatever the provider registers. Task 8 extends the config to plan one
+// of each resource.
+func TestProviderSchema(t *testing.T) {
+	t.Parallel()
+	resource.Test(t, resource.TestCase{
+		IsUnitTest:               true,
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config:   `provider "accumulator" {}`,
+			PlanOnly: true,
+		}},
+	})
+}
+
+// TestUserFacingStringsUseEmDashes pins the house style: Go comments in this
+// repository write a parenthetical break as `--`, but user-facing text renders
+// it, so it has to be a real em dash there. `--` inside a MarkdownDescription
+// reaches the registry documentation as two literal hyphens.
+//
+// Scanning string literals rather than raw file text separates the two cases
+// cleanly: a comment is not a literal. A literal is checked as its concatenated
+// value, not one BasicLit at a time, because this package wraps long
+// descriptions across `+`-joined literals and a per-literal scan would miss a
+// `--` split across the join.
+func TestUserFacingStringsUseEmDashes(t *testing.T) {
+	t.Parallel()
+
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parsing the package source: %v", err)
+	}
+
+	// constString reports the value of a compile-time constant string
+	// expression: a string literal, or a `+` concatenation of them. It returns
+	// false for anything it cannot fully resolve, so the caller can keep
+	// walking rather than guess.
+	var constString func(ast.Node) (string, bool)
+	constString = func(n ast.Node) (string, bool) {
+		switch e := n.(type) {
+		case *ast.BasicLit:
+			if e.Kind != token.STRING {
+				return "", false
+			}
+			v, err := strconv.Unquote(e.Value)
+			if err != nil {
+				return "", false
+			}
+			return v, true
+		case *ast.BinaryExpr:
+			if e.Op != token.ADD {
+				return "", false
+			}
+			left, ok := constString(e.X)
+			if !ok {
+				return "", false
+			}
+			right, ok := constString(e.Y)
+			if !ok {
+				return "", false
+			}
+			return left + right, true
+		default:
+			return "", false
+		}
+	}
+
+	checked := 0
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			ast.Inspect(file, func(n ast.Node) bool {
+				value, ok := constString(n)
+				if !ok {
+					return true
+				}
+				checked++
+				// A concatenation is checked here as a whole, and its child
+				// literals must not be re-checked on their own: a `--` split
+				// across the join would be reported twice. Returning false
+				// stops the descent once a node has been folded.
+				if strings.Contains(value, "--") {
+					t.Errorf("%s: user-facing string contains \"--\" (%q); "+
+						"it renders as two literal hyphens, so use an em dash instead",
+						fset.Position(n.Pos()), value)
+				}
+				return false
+			})
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no string literals were checked; the test is not doing what it claims")
+	}
+}
+
+// TestEveryGoFileHasTheSPDXHeader guards the whole module, not just this
+// package. Every task adds files under main.go, internal/, and tools/, and this
+// is the only check that sees all of them.
+func TestEveryGoFileHasTheSPDXHeader(t *testing.T) {
+	t.Parallel()
+
+	const root = "../.."
+	const want = "// SPDX-License-Identifier: GPL-3.0-or-later"
+	skipDirs := map[string]bool{
+		".git":         true,
+		".claude":      true,
+		".superpowers": true,
+	}
+
+	checked := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".go") {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("reading %s: %v", path, err)
+			return nil
+		}
+		checked++
+		if !strings.HasPrefix(string(content), want) {
+			t.Errorf("%s does not start with %q", path, want)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+	if checked == 0 {
+		t.Fatal("no Go files were checked; the test is not doing what it claims")
+	}
+}
