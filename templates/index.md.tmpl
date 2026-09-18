@@ -35,8 +35,8 @@ state loss all discard the accumulated history. `inputs` is stored in state, so
 
 ## License
 
-GPL-3.0-or-later. Every dependency is GPL-compatible (MPL-2.0, BSD-3-Clause,
-MIT, or Apache-2.0).
+GPL-3.0-or-later. Every dependency is GPL-compatible (MPL-2.0, BSD-2-Clause,
+BSD-3-Clause, MIT, or Apache-2.0).
 
 ---
 

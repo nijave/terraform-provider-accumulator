@@ -27,7 +27,7 @@ output "seen_hosts" {
 
 ### Required
 
-- `inputs` (List of String) The values to accumulate. Terraform stores `inputs` in state so the provider can compare the planned list against the previous apply's list.
+- `inputs` (List of String) The values to accumulate. Terraform stores `inputs` in state so the value round-trips; an update unions it into `outputs`. Re-submitting a value that is already present changes nothing.
 
 ### Optional
 
@@ -36,7 +36,7 @@ output "seen_hosts" {
 
 ### Read-Only
 
-- `id` (String) A stable identifier: the lowercase hex SHA-256 of the canonical JSON encoding of the `inputs` present when the resource was created. Stable across in-place updates; recomputed on replacement.
+- `id` (String) A stable identifier: the lowercase hex SHA-256 of the canonical JSON encoding of the resource's initial values. On create (and replacement) that is the `inputs` list; on import it is the seeded `outputs`, because a set resource seeds no meaningful `inputs`. Stable across in-place updates.
 - `outputs` (Set of String) Every value ever accumulated, each appearing once. Computed; never configured. Deliberately has no `UseStateForUnknown`: it must plan as unknown whenever an input changes, because the applied value depends on the prior state.
 
 ## Import

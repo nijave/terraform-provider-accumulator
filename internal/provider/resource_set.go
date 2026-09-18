@@ -53,7 +53,8 @@ func (r *setResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				Required:    true,
 				ElementType: types.StringType,
 				MarkdownDescription: "The values to accumulate. Terraform stores `inputs` in state so " +
-					"the provider can compare the planned list against the previous apply's list.",
+					"the value round-trips; an update unions it into `outputs`. Re-submitting a value " +
+					"that is already present changes nothing.",
 			},
 			"triggers_reset": schema.StringAttribute{
 				Optional: true,
@@ -83,8 +84,9 @@ func (r *setResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 					stringplanmodifier.UseStateForUnknown(),
 				},
 				MarkdownDescription: "A stable identifier: the lowercase hex SHA-256 of the canonical " +
-					"JSON encoding of the `inputs` present when the resource was created. Stable across " +
-					"in-place updates; recomputed on replacement.",
+					"JSON encoding of the resource's initial values. On create (and replacement) that " +
+					"is the `inputs` list; on import it is the seeded `outputs`, because a set resource " +
+					"seeds no meaningful `inputs`. Stable across in-place updates.",
 			},
 		},
 	}
