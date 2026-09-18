@@ -81,9 +81,6 @@ func TestProviderSchema(t *testing.T) {
 	if len(resp.Diagnostics) != 0 {
 		t.Fatalf("provider schema diagnostics: %+v", resp.Diagnostics)
 	}
-	if len(resp.ResourceSchemas) != 0 {
-		t.Fatalf("provider registers %d resources, want 0 for now; later tasks add them", len(resp.ResourceSchemas))
-	}
 	// Keep the schema genuinely non-empty so this test cannot pass against an
 	// unregistered provider that returns nothing at all.
 	if resp.Provider == nil {
