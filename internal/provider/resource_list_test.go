@@ -74,14 +74,22 @@ func TestAccListAppendAndTrim(t *testing.T) {
 				ConfigPlanChecks:  expectEmptyAfterRefresh(),
 			},
 			{
-				Config:            listConfig(`["b"]`, 2, ""),
-				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a", "b")},
-				ConfigPlanChecks:  expectEmptyAfterRefresh(),
+				Config: listConfig(`["b"]`, 2, ""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectListOutputs("a", "b"),
+					statecheck.ExpectKnownValue("accumulator_list.test", tfjsonpath.New("id"),
+						knownvalue.StringExact("0eb5b8d6f81bc677da8a08567cc4fa9a06a57e9ec8da85ed73a7f62727996002")),
+				},
+				ConfigPlanChecks: expectEmptyAfterRefresh(),
 			},
 			{
-				Config:            listConfig(`["c"]`, 2, ""),
-				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("b", "c")},
-				ConfigPlanChecks:  expectEmptyAfterRefresh(),
+				Config: listConfig(`["c"]`, 2, ""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectListOutputs("b", "c"),
+					statecheck.ExpectKnownValue("accumulator_list.test", tfjsonpath.New("id"),
+						knownvalue.StringExact("0eb5b8d6f81bc677da8a08567cc4fa9a06a57e9ec8da85ed73a7f62727996002")),
+				},
+				ConfigPlanChecks: expectEmptyAfterRefresh(),
 			},
 		},
 	})

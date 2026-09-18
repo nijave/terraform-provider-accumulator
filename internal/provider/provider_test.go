@@ -89,6 +89,11 @@ func TestProviderSchema(t *testing.T) {
 	if resp.Provider == nil {
 		t.Fatal("GetProviderSchema returned no provider schema")
 	}
+	for _, name := range []string{"accumulator_list", "accumulator_set"} {
+		if _, ok := resp.ResourceSchemas[name]; !ok {
+			t.Errorf("provider did not register resource %q", name)
+		}
+	}
 }
 
 // TestUserFacingStringsUseEmDashes pins the house style: Go comments in this
