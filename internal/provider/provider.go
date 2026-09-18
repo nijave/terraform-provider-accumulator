@@ -53,7 +53,9 @@ func (p *accumulatorProvider) Configure(_ context.Context, _ provider.ConfigureR
 }
 
 func (p *accumulatorProvider) Resources(_ context.Context) []func() resource.Resource {
-	return []func() resource.Resource{}
+	return []func() resource.Resource{
+		NewListResource,
+	}
 }
 
 // DataSources returns nothing. There is nothing to query that a resource does

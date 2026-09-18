@@ -16,6 +16,9 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 
 	"github.com/nijave/terraform-provider-accumulator/internal/provider"
 )
@@ -214,5 +217,24 @@ func TestEveryGoFileHasTheSPDXHeader(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no Go files were checked; the test is not doing what it claims")
+	}
+}
+
+// stringList widens string values into the knownvalue check slice
+// ListExact/SetExact take.
+func stringList(values ...string) []knownvalue.Check {
+	checks := make([]knownvalue.Check, 0, len(values))
+	for _, v := range values {
+		checks = append(checks, knownvalue.StringExact(v))
+	}
+	return checks
+}
+
+// expectEmptyAfterRefresh is the check spec section 4 invariant 1 requires of
+// every step that applies configuration: after the apply and a refresh, the
+// plan proposes nothing.
+func expectEmptyAfterRefresh() resource.ConfigPlanChecks {
+	return resource.ConfigPlanChecks{
+		PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 	}
 }
