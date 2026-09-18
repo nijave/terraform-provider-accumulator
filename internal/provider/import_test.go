@@ -143,6 +143,9 @@ func TestAccSetImportIgnoresInputsKey(t *testing.T) {
 				ImportStatePersist: true,
 				ImportStateVerify:  false,
 				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					if len(states) != 1 {
+						return fmt.Errorf("imported %d resources, want 1", len(states))
+					}
 					attrs := states[0].Attributes
 					if got := attrs["inputs.#"]; got != "0" {
 						return fmt.Errorf("inputs.# = %q, want 0; the inputs key must be ignored", got)
@@ -160,6 +163,40 @@ func TestAccSetImportIgnoresInputsKey(t *testing.T) {
 				ConfigPlanChecks: expectEmptyAfterRefresh(),
 			},
 		},
+	})
+}
+
+// TestAccSetImportHashesDeduplicatedOutputs pins the import identity to the
+// deduplicated outputs (design spec section 8): a seed containing duplicates
+// must yield the same id as its deduplicated form, matching the state derived
+// from it.
+func TestAccSetImportHashesDeduplicatedOutputs(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config:             importConfig("accumulator_set"),
+			ResourceName:       "accumulator_set.test",
+			ImportState:        true,
+			ImportStateId:      `{"outputs":["a","a","b"]}`,
+			ImportStatePersist: true,
+			ImportStateVerify:  false,
+			ImportStateCheck: func(states []*terraform.InstanceState) error {
+				if len(states) != 1 {
+					return fmt.Errorf("imported %d resources, want 1", len(states))
+				}
+				attrs := states[0].Attributes
+				if got := attrs["outputs.#"]; got != "2" {
+					return fmt.Errorf("outputs.# = %q, want 2; the seed must be deduplicated", got)
+				}
+				// sha256(`["a","b"]`), the deduplicated outputs, not
+				// sha256(`["a","a","b"]`).
+				if got := attrs["id"]; got != "0473ef2dc0d324ab659d3580c1134e9d812035905c4781fdd6d529b0c6860e13" {
+					return fmt.Errorf("id = %q, want the hash of the deduplicated outputs", got)
+				}
+				return nil
+			},
+		}},
 	})
 }
 

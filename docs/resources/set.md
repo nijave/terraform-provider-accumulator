@@ -27,7 +27,7 @@ output "seen_hosts" {
 
 ### Required
 
-- `inputs` (List of String) The values to accumulate. Terraform stores `inputs` in state so the value round-trips; an update unions it into `outputs`. Re-submitting a value that is already present changes nothing.
+- `inputs` (List of String) The values to accumulate. Terraform stores `inputs` in state so the value round-trips; an update unions it into `outputs` (or, when `triggers_reset` changes, reseeds `outputs` from it). Re-submitting a value that is already present changes nothing.
 
 ### Optional
 

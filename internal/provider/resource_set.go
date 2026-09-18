@@ -53,8 +53,9 @@ func (r *setResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				Required:    true,
 				ElementType: types.StringType,
 				MarkdownDescription: "The values to accumulate. Terraform stores `inputs` in state so " +
-					"the value round-trips; an update unions it into `outputs`. Re-submitting a value " +
-					"that is already present changes nothing.",
+					"the value round-trips; an update unions it into `outputs` (or, when " +
+					"`triggers_reset` changes, reseeds `outputs` from it). Re-submitting a value that " +
+					"is already present changes nothing.",
 			},
 			"triggers_reset": schema.StringAttribute{
 				Optional: true,
@@ -183,7 +184,11 @@ func (r *setResource) ImportState(ctx context.Context, req resource.ImportStateR
 
 	inputs, d := listFromStrings(ctx, []string{})
 	resp.Diagnostics.Append(d...)
-	outputs, d := setFromStrings(ctx, accumulate.Merge(nil, seed.Outputs))
+	// Hash the deduplicated outputs, not the raw seed: a seed such as
+	// {"outputs":["a","a","b"]} then yields the same id as {"outputs":["a","b"]},
+	// matching the state it produces (design spec section 8).
+	merged := accumulate.Merge(nil, seed.Outputs)
+	outputs, d := setFromStrings(ctx, merged)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -194,6 +199,6 @@ func (r *setResource) ImportState(ctx context.Context, req resource.ImportStateR
 		TriggersReset:       types.StringNull(),
 		TriggersReplacement: types.StringNull(),
 		Outputs:             outputs,
-		ID:                  types.StringValue(accumulate.HashID(seed.Outputs)),
+		ID:                  types.StringValue(accumulate.HashID(merged)),
 	})...)
 }
