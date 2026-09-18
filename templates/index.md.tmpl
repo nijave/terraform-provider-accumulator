@@ -39,6 +39,7 @@ accumulate secrets.
 GPL-3.0-or-later. Every dependency is GPL-compatible (MPL-2.0, BSD-2-Clause,
 BSD-3-Clause, MIT, or Apache-2.0).
 
----
-
-{{ .SchemaMarkdown }}
+{{/* The provider has no configuration schema by design (the provider block is
+empty), so the generated schema section is intentionally omitted: it would
+render an empty "## Schema" heading. Re-add the schema placeholder if a
+provider config block is ever introduced. */}}
