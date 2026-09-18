@@ -14,7 +14,10 @@ import (
 	"github.com/nijave/terraform-provider-accumulator/internal/accumulate"
 )
 
-var _ resource.Resource = (*setResource)(nil)
+var (
+	_ resource.Resource                = (*setResource)(nil)
+	_ resource.ResourceWithImportState = (*setResource)(nil)
+)
 
 // setResource accumulates inputs across applies into a deduplicated set. State
 // is the only store, so Read and Delete are no-ops.
@@ -160,4 +163,35 @@ func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, re
 // Delete is a no-op. The framework removes the resource from state and there is
 // nothing external to tear down.
 func (r *setResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
+}
+
+// ImportState seeds the set from a JSON object. outputs is deduplicated and
+// id hashes the seeded outputs. inputs is seeded as an empty list rather than
+// null: it is a required attribute, and an empty list is a valid non-null
+// value, so nothing depends on tolerating a null required attribute in
+// imported state. The next plan sets inputs from configuration and Update
+// unions it into the seeded outputs. An inputs key in the ID is accepted and
+// ignored.
+func (r *setResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	seed, err := accumulate.ParseImport(req.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid import ID", err.Error())
+		return
+	}
+
+	inputs, d := listFromStrings(ctx, []string{})
+	resp.Diagnostics.Append(d...)
+	outputs, d := setFromStrings(ctx, accumulate.Merge(nil, seed.Outputs))
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &setResourceModel{
+		Inputs:              inputs,
+		TriggersReset:       types.StringNull(),
+		TriggersReplacement: types.StringNull(),
+		Outputs:             outputs,
+		ID:                  types.StringValue(accumulate.HashID(seed.Outputs)),
+	})...)
 }

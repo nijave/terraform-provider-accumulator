@@ -16,7 +16,10 @@ import (
 	"github.com/nijave/terraform-provider-accumulator/internal/accumulate"
 )
 
-var _ resource.Resource = (*listResource)(nil)
+var (
+	_ resource.Resource                = (*listResource)(nil)
+	_ resource.ResourceWithImportState = (*listResource)(nil)
+)
 
 // listResource accumulates inputs across applies, keeping the most recent
 // length entries. State is the only store, so Read and Delete are no-ops.
@@ -179,4 +182,35 @@ func (r *listResource) Update(ctx context.Context, req resource.UpdateRequest, r
 // Delete is a no-op. The framework removes the resource from state and there is
 // nothing external to tear down.
 func (r *listResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
+}
+
+// ImportState seeds the resource from a JSON object. length, triggers_reset,
+// and triggers_replacement are left null: length is required configuration, so
+// the next plan fills it in and Update re-trims the seeded outputs. Seeding
+// inputs is what lets a matching configuration produce an empty plan instead of
+// appending the configured list a second time.
+func (r *listResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	seed, err := accumulate.ParseImport(req.ID)
+	if err != nil {
+		// The error names the expected shape and quotes the offending key only.
+		resp.Diagnostics.AddError("Invalid import ID", err.Error())
+		return
+	}
+
+	inputs, d := listFromStrings(ctx, seed.Inputs)
+	resp.Diagnostics.Append(d...)
+	outputs, d := listFromStrings(ctx, seed.Outputs)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &listResourceModel{
+		Inputs:              inputs,
+		Length:              types.Int64Null(),
+		TriggersReset:       types.StringNull(),
+		TriggersReplacement: types.StringNull(),
+		Outputs:             outputs,
+		ID:                  types.StringValue(accumulate.HashID(seed.Inputs)),
+	})...)
 }
