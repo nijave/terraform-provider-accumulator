@@ -44,10 +44,10 @@ func (r *setResource) Metadata(_ context.Context, req resource.MetadataRequest, 
 func (r *setResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Accumulates `inputs` across applies into a deduplicated `outputs` set. " +
-			"Every value ever seen is retained once, in the order it was first observed, and a value " +
-			"is only forgotten by a `triggers_reset` change or a replacement. `inputs` is a list, " +
-			"matching the shape users write in configuration; order does not affect the result because " +
-			"the values are unioned.",
+			"Every value ever seen is retained once, and a value is only forgotten by a " +
+			"`triggers_reset` change or a replacement. `inputs` is a list, matching the shape users " +
+			"write in configuration. `outputs` is a set, so Terraform does not preserve or promise any " +
+			"ordering of its elements; only the membership is meaningful.",
 		Attributes: map[string]schema.Attribute{
 			"inputs": schema.ListAttribute{
 				Required:    true,

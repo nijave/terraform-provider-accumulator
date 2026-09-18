@@ -3,12 +3,12 @@
 page_title: "accumulator_set Resource - accumulator"
 subcategory: ""
 description: |-
-  Accumulates inputs across applies into a deduplicated outputs set. Every value ever seen is retained once, in the order it was first observed, and a value is only forgotten by a triggers_reset change or a replacement. inputs is a list, matching the shape users write in configuration; order does not affect the result because the values are unioned.
+  Accumulates inputs across applies into a deduplicated outputs set. Every value ever seen is retained once, and a value is only forgotten by a triggers_reset change or a replacement. inputs is a list, matching the shape users write in configuration. outputs is a set, so Terraform does not preserve or promise any ordering of its elements; only the membership is meaningful.
 ---
 
 # accumulator_set (Resource)
 
-Accumulates `inputs` across applies into a deduplicated `outputs` set. Every value ever seen is retained once, in the order it was first observed, and a value is only forgotten by a `triggers_reset` change or a replacement. `inputs` is a list, matching the shape users write in configuration; order does not affect the result because the values are unioned.
+Accumulates `inputs` across applies into a deduplicated `outputs` set. Every value ever seen is retained once, and a value is only forgotten by a `triggers_reset` change or a replacement. `inputs` is a list, matching the shape users write in configuration. `outputs` is a set, so Terraform does not preserve or promise any ordering of its elements; only the membership is meaningful.
 
 ## Example Usage
 
@@ -47,6 +47,8 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 
 ```shell
 # accumulator_set seeds outputs (deduplicated) and hashes them for id. An
-# inputs key, if present, is accepted and ignored.
+# inputs key, if present, is accepted and ignored: inputs is seeded as an
+# empty list, and the first plan after import supplies it from configuration
+# and unions it into the seeded outputs.
 terraform import accumulator_set.seen_hosts '{"outputs":["a","b"]}'
 ```

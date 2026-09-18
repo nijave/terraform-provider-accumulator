@@ -25,13 +25,14 @@ most recent `length` entries.
 
 - OpenTofu >= 1.10 (the primary target, and what CI tests) or Terraform >= 1.10.
   Terraform is expected to work but is not tested.
-- Go >= 1.25 to build.
+- Go >= 1.25.12 to build (the module's `go` directive is the floor).
 
 ## History lives in state
 
-`terraform state rm`, moving a resource between workspaces or state files, and
-state loss all discard the accumulated history. `inputs` is stored in state, so
-`tofu plan` and `tofu state show` expose it: do not accumulate secrets.
+`tofu state rm` (or `terraform state rm`), moving a resource between workspaces
+or state files, and state loss all discard the accumulated history. `inputs` is
+stored in state, so `tofu plan` and `tofu state show` expose it: do not
+accumulate secrets.
 
 ## License
 

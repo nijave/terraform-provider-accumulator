@@ -103,8 +103,8 @@ terraform-provider-accumulator/
       resource_set_test.go
   docs/
     index.md                           # generated
-    resources/accumulator_list.md      # generated
-    resources/accumulator_set.md       # generated
+    resources/list.md                  # generated; tfplugindocs strips the provider prefix
+    resources/set.md                   # generated; tfplugindocs strips the provider prefix
     superpowers/specs/                 # this document (hand-written, never clobbered)
   examples/
     provider/provider.tf
@@ -376,8 +376,11 @@ a `terraform-plugin-*` package, mirroring `terraform-provider-pki`.
 
 `internal/provider` carries framework-level guards adapted from pki:
 
-- `TestProviderSchema` validates the whole schema with `IsUnitTest: true`,
-  which needs no `TF_ACC`.
+- `TestProviderSchema` validates the whole schema by calling `GetProviderSchema`
+  on the in-process protocol 6 server. That needs no `TF_ACC` and no Terraform
+  CLI. (`resource.Test` with `IsUnitTest: true`, the pki pattern, skips the
+  `TF_ACC` check but still discovers or downloads a Terraform binary, so it is
+  not used here.)
 - `TestEveryGoFileHasTheSPDXHeader` walks the module and requires the license
   header on every `.go` file.
 - A house-style test that user-facing strings do not contain `--` where an em
@@ -475,7 +478,7 @@ ships `terraform-registry-manifest.json` as an extra file.
 
 GPL-3.0-or-later, matching pki. Every `.go` file begins with
 `// SPDX-License-Identifier: GPL-3.0-or-later`. Dependencies must be
-GPLv3-compatible; the audited set is MPL-2.0, BSD-3-Clause, MIT, and Apache-2.0.
+GPLv3-compatible; the audited set is MPL-2.0, BSD-2-Clause, BSD-3-Clause, MIT, and Apache-2.0.
 Nothing under BUSL-1.1 may be linked or downloaded: a provider is a separate
 process speaking gRPC, so Terraform CLI is not a dependency, and CI installs
 OpenTofu instead.

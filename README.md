@@ -29,8 +29,9 @@ output "recent_deploys" {
   `inputs` differs from the previous apply appends the whole new list; a
   `length` change re-trims the existing history. `inputs = []` never erases
   history.
-- **`accumulator_set`** remembers every value it has ever seen, each once, in
-  the order first observed.
+- **`accumulator_set`** remembers every value it has seen, each once, until a
+  `triggers_reset` change or a replacement forgets it. `outputs` is a set, so
+  Terraform does not preserve or promise any element ordering.
 
 Both resources carry `triggers_reset` (discard history and reseed from `inputs`)
 and `triggers_replacement` (force a replacement that reseeds). Both are
@@ -42,11 +43,18 @@ tofu import accumulator_list.recent_deploys '{"inputs":["a","b"],"outputs":["a",
 tofu import accumulator_set.seen_hosts '{"outputs":["a","b"]}'
 ```
 
+Import seeds state only. For `accumulator_list`, `length` is required
+configuration and is not seeded, so the first apply after import supplies it and
+re-trims the seeded `outputs`. For `accumulator_set`, `inputs` is seeded as an
+empty list and the first apply unions the configured `inputs` into the seeded
+`outputs`.
+
 ## History lives in state
 
-`terraform state rm`, moving a resource between workspaces or state files, and
-state loss all discard the accumulated history. `inputs` is stored in state, so
-`tofu plan` and `tofu state show` expose it: do not accumulate secrets.
+`tofu state rm` (or `terraform state rm`), moving a resource between workspaces
+or state files, and state loss all discard the accumulated history. `inputs` is
+stored in state, so `tofu plan` and `tofu state show` expose it: do not
+accumulate secrets.
 
 ## Documentation
 
@@ -57,7 +65,7 @@ has no configuration block.
 
 - OpenTofu >= 1.10 (primary target, what CI tests) or Terraform >= 1.10
   (expected to work, not tested)
-- Go >= 1.25 to build
+- Go >= 1.25.12 to build (the module's `go` directive is the floor)
 
 ## Development
 
