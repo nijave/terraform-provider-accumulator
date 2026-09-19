@@ -163,10 +163,12 @@ func (r *listResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRe
 		}
 	}
 
-	// An unknown branch input means the planned outputs cannot be known yet.
-	// Leaving them untouched keeps the framework's unknown marking in place
-	// until Create or Update resolves the values. Unknown elements inside
-	// inputs count too: Terraform marks them individually.
+	// An unknown branch input makes the planned outputs unknowable, not merely
+	// unresolved: a triggers_reset that may have changed yields either the
+	// reseeded list or the appended one, and no single planned value can
+	// express that. Leaving outputs untouched keeps the framework's unknown
+	// marking in place until Create or Update resolves the value. Unknown
+	// elements inside inputs count too: Terraform marks them individually.
 	if listContainsUnknown(plan.Inputs) || plan.Length.IsUnknown() ||
 		plan.TriggersReset.IsUnknown() || plan.TriggersReplacement.IsUnknown() {
 		return

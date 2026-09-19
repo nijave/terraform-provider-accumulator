@@ -244,7 +244,10 @@ the prior history. On create and replacement ModifyPlan also plans the `id`
 that Create will produce; `UseStateForUnknown` covers `id` for in-place
 updates. When `inputs` (including any single element), `length`, or a trigger
 is unknown at plan time, or the plan is a destroy plan, ModifyPlan leaves
-`outputs` untouched and the framework's unknown marking stands. The guard
+`outputs` untouched and the framework's unknown marking stands. This is not
+conservatism: with a possibly-changed `triggers_reset` the apply produces
+either the reseeded list or the appended one, and no single planned value can
+express that. The guard
 checks elements individually, because Terraform marks unknown collection
 elements one by one: a list holding one unknown element is not itself unknown.
 

@@ -114,10 +114,11 @@ func TestAccSetOutputsKnownAtPlanTimeOnReset(t *testing.T) {
 	})
 }
 
-// TestAccSetOutputsUnknownWhenInputsUnknown pins the conservative case: when
-// the planned inputs are unknown, outputs and id must plan as unknown.
-// uuid() is never known before apply, and the resource is expected to diff
-// forever after, because each plan re-evaluates it.
+// TestAccSetOutputsUnknownWhenInputsUnknown pins the unknowable case: when
+// the planned inputs are unknown, outputs and id must plan as unknown, because
+// the branch decision itself is unknowable. uuid() is never known before
+// apply, and the resource is expected to diff forever after, because each
+// plan re-evaluates it.
 func TestAccSetOutputsUnknownWhenInputsUnknown(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },

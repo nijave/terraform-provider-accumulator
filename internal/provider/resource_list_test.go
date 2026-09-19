@@ -328,10 +328,11 @@ func TestAccListOutputsKnownAtPlanTimeOnReplacement(t *testing.T) {
 	})
 }
 
-// TestAccListOutputsUnknownWhenInputsUnknown pins the conservative case: when
-// the planned inputs are unknown, outputs and id must plan as unknown.
-// Computing them from partial data would risk an inconsistent-result error at
-// apply. uuid() is never known before apply, and the resource is expected to
+// TestAccListOutputsUnknownWhenInputsUnknown pins the unknowable case: when
+// the planned inputs are unknown, outputs and id must plan as unknown. The
+// branch decision itself is unknowable: the apply produces either the
+// reseeded or the appended list, and no planned value can express that.
+// uuid() is never known before apply, and the resource is expected to
 // diff forever after, because each plan re-evaluates it.
 func TestAccListOutputsUnknownWhenInputsUnknown(t *testing.T) {
 	resource.Test(t, resource.TestCase{
