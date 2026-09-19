@@ -30,6 +30,21 @@ func expectListOutputs(outputs ...string) statecheck.StateCheck {
 		tfjsonpath.New("outputs"), knownvalue.ListExact(stringList(outputs...)))
 }
 
+// expectListPlanOutputs checks the planned (before apply) outputs value is
+// known and equals the given elements: the plan must show the list the apply
+// will produce, not "(known after apply)".
+func expectListPlanOutputs(outputs ...string) plancheck.PlanCheck {
+	return plancheck.ExpectKnownValue("accumulator_list.test",
+		tfjsonpath.New("outputs"), knownvalue.ListExact(stringList(outputs...)))
+}
+
+// expectListPlanID checks the planned (before apply) id is known and equals the
+// given hash.
+func expectListPlanID(id string) plancheck.PlanCheck {
+	return plancheck.ExpectKnownValue("accumulator_list.test",
+		tfjsonpath.New("id"), knownvalue.StringExact(id))
+}
+
 func TestAccListCreate(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
@@ -180,6 +195,195 @@ func TestAccListUnchangedInputs(t *testing.T) {
 				ConfigPlanChecks: expectEmptyAfterRefresh(),
 			},
 		},
+	})
+}
+
+// TestAccListOutputsKnownAtPlanTimeOnCreate pins that the create plan shows
+// the outputs and id the apply will produce, so downstream resources can plan
+// against them without waiting for the apply.
+func TestAccListOutputsKnownAtPlanTimeOnCreate(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config: listConfig(`["a", "b"]`, 2, ""),
+			ConfigPlanChecks: resource.ConfigPlanChecks{
+				PreApply: []plancheck.PlanCheck{
+					expectListPlanOutputs("a", "b"),
+					// sha256(`["a","b"]`)
+					expectListPlanID("0473ef2dc0d324ab659d3580c1134e9d812035905c4781fdd6d529b0c6860e13"),
+				},
+				PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+			},
+			ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a", "b")},
+		}},
+	})
+}
+
+// TestAccListOutputsKnownAtPlanTimeOnAppend pins that an inputs change plans
+// the appended outputs, computed against the prior state's history.
+func TestAccListOutputsKnownAtPlanTimeOnAppend(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            listConfig(`["a"]`, 2, ""),
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a")},
+				ConfigPlanChecks:  expectEmptyAfterRefresh(),
+			},
+			{
+				Config: listConfig(`["b"]`, 2, ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply:             []plancheck.PlanCheck{expectListPlanOutputs("a", "b")},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a", "b")},
+			},
+		},
+	})
+}
+
+// TestAccListOutputsKnownAtPlanTimeOnLengthChange pins that a length-only
+// change plans the re-trimmed outputs.
+func TestAccListOutputsKnownAtPlanTimeOnLengthChange(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            listConfig(`["a", "b", "c"]`, 3, ""),
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a", "b", "c")},
+				ConfigPlanChecks:  expectEmptyAfterRefresh(),
+			},
+			{
+				Config: listConfig(`["a", "b", "c"]`, 2, ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply:             []plancheck.PlanCheck{expectListPlanOutputs("b", "c")},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("b", "c")},
+			},
+		},
+	})
+}
+
+// TestAccListOutputsKnownAtPlanTimeOnReset pins that a triggers_reset change
+// plans the reseeded outputs.
+func TestAccListOutputsKnownAtPlanTimeOnReset(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            listConfig(`["a"]`, 2, `  triggers_reset = "v1"`),
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a")},
+				ConfigPlanChecks:  expectEmptyAfterRefresh(),
+			},
+			{
+				Config:            listConfig(`["b"]`, 2, `  triggers_reset = "v1"`),
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a", "b")},
+				ConfigPlanChecks:  expectEmptyAfterRefresh(),
+			},
+			{
+				// The reset discards ["a","b"] and reseeds from ["b"].
+				Config: listConfig(`["b"]`, 2, `  triggers_reset = "v2"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply:             []plancheck.PlanCheck{expectListPlanOutputs("b")},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("b")},
+			},
+		},
+	})
+}
+
+// TestAccListOutputsKnownAtPlanTimeOnReplacement pins that a replacement plans
+// the reseeded outputs and the new id, both of which Create will produce.
+func TestAccListOutputsKnownAtPlanTimeOnReplacement(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            listConfig(`["a"]`, 2, `  triggers_replacement = "v1"`),
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a")},
+				ConfigPlanChecks:  expectEmptyAfterRefresh(),
+			},
+			{
+				Config: listConfig(`["c"]`, 2, `  triggers_replacement = "v2"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("accumulator_list.test", plancheck.ResourceActionReplace),
+						expectListPlanOutputs("c"),
+						// sha256(`["c"]`), the replacement's id, not the
+						// prior resource's id.
+						expectListPlanID("fd2079a3096d5abb9bdf54cc5c80262e7b58bac10d524846455474beff760be9"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("c")},
+			},
+		},
+	})
+}
+
+// TestAccListOutputsUnknownWhenInputsUnknown pins the conservative case: when
+// the planned inputs are unknown, outputs and id must plan as unknown.
+// Computing them from partial data would risk an inconsistent-result error at
+// apply. uuid() is never known before apply, and the resource is expected to
+// diff forever after, because each plan re-evaluates it.
+func TestAccListOutputsUnknownWhenInputsUnknown(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config:             listConfig(`[uuid()]`, 1, ""),
+			ExpectNonEmptyPlan: true,
+			ConfigPlanChecks: resource.ConfigPlanChecks{
+				PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectUnknownValue("accumulator_list.test", tfjsonpath.New("outputs")),
+					plancheck.ExpectUnknownValue("accumulator_list.test", tfjsonpath.New("id")),
+				},
+			},
+			ConfigStateChecks: []statecheck.StateCheck{
+				statecheck.ExpectKnownValue("accumulator_list.test",
+					tfjsonpath.New("outputs"), knownvalue.ListSizeExact(1)),
+			},
+		}},
+	})
+}
+
+// TestAccListFeedsAnotherListAtPlanTime pins the cross-resource effect: a
+// downstream accumulator sees the upstream outputs as known values in its own
+// plan, on the first plan, before anything has been applied.
+func TestAccListFeedsAnotherListAtPlanTime(t *testing.T) {
+	config := `
+resource "accumulator_list" "src" {
+  inputs = ["x"]
+  length = 1
+}
+
+resource "accumulator_list" "test" {
+  inputs = accumulator_list.src.outputs
+  length = 1
+}
+`
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config: config,
+			ConfigPlanChecks: resource.ConfigPlanChecks{
+				PreApply: []plancheck.PlanCheck{
+					expectListPlanOutputs("x"),
+					// sha256(`["x"]`), the downstream resource's own id.
+					expectListPlanID("cd65ea2c2ad99e94a85b1b6df72efef9cb2ed0ae933a60c32ce16317f7d7d6aa"),
+				},
+				PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+			},
+			ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("x")},
+		}},
 	})
 }
 

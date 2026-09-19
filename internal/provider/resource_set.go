@@ -17,6 +17,7 @@ import (
 var (
 	_ resource.Resource                = (*setResource)(nil)
 	_ resource.ResourceWithImportState = (*setResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*setResource)(nil)
 )
 
 // setResource accumulates inputs across applies into a deduplicated set. State
@@ -76,8 +77,10 @@ func (r *setResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				Computed:    true,
 				ElementType: types.StringType,
 				MarkdownDescription: "Every value ever accumulated, each appearing once. Computed; " +
-					"never configured. Deliberately has no `UseStateForUnknown`: it must plan as unknown " +
-					"whenever an input changes, because the applied value depends on the prior state.",
+					"never configured. The plan shows the value the next apply will produce, " +
+					"computed against the prior state. When `inputs` (including any single element) " +
+					"or a trigger is itself unknown at plan time, `outputs` plans as unknown and " +
+					"the apply resolves it.",
 			},
 			"id": schema.StringAttribute{
 				Computed: true,
@@ -119,6 +122,88 @@ func (r *setResource) Create(ctx context.Context, req resource.CreateRequest, re
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
+// ModifyPlan writes the outputs the next apply will produce into the plan, so
+// the plan shows concrete values and downstream resources can plan against
+// them. It runs the same accumulation algorithm as Create and Update, through
+// the same accumulate.NextSetOutputs call, so the planned value cannot
+// disagree with the applied one. When any value the branch decision depends on
+// is still unknown, outputs is left unknown and the apply resolves it.
+func (r *setResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// A destroy plan carries no planned state to compute from, and the
+	// framework requires it to stay null.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan setResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// State is null when the resource is being created, and Get refuses a null
+	// state, so it is only read when there is one to read.
+	creating := req.State.Raw.IsNull()
+
+	var state setResourceModel
+	var stateOutputs []string
+	if !creating {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	// An unknown branch input means the planned outputs cannot be known yet.
+	// Leaving them untouched keeps the framework's unknown marking in place
+	// until Create or Update resolves the values. Unknown elements inside
+	// inputs count too: Terraform marks them individually.
+	if listContainsUnknown(plan.Inputs) || plan.TriggersReset.IsUnknown() ||
+		plan.TriggersReplacement.IsUnknown() {
+		return
+	}
+	if !creating && (state.Inputs.IsUnknown() || state.Outputs.IsUnknown() ||
+		state.TriggersReset.IsUnknown() || state.TriggersReplacement.IsUnknown()) {
+		return
+	}
+
+	planInputs, d := stringsFromList(ctx, plan.Inputs)
+	resp.Diagnostics.Append(d...)
+	if !creating {
+		stateOutputs, d = stringsFromSet(ctx, state.Outputs)
+		resp.Diagnostics.Append(d...)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// The branch conditions mirror Update's, with two additions: a null state
+	// means Create runs, and a triggers_replacement change means a replacement
+	// means Create runs. Both seed outputs from the planned inputs alone,
+	// which is what reseed expresses. No inputs comparison is needed, matching
+	// Update: union is idempotent, so unioning whenever Create or Update runs
+	// is correct.
+	replacing := !creating && !plan.TriggersReplacement.Equal(state.TriggersReplacement)
+	reseed := creating || replacing || !plan.TriggersReset.Equal(state.TriggersReset)
+
+	outputs := accumulate.NextSetOutputs(reseed, planInputs, stateOutputs)
+
+	out, d := setFromStrings(ctx, outputs)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	plan.Outputs = out
+	if creating || replacing {
+		// Create identifies the resource from the planned inputs. An in-place
+		// update keeps the state id; UseStateForUnknown has already resolved
+		// it into the plan by the time ModifyPlan runs.
+		plan.ID = types.StringValue(accumulate.HashID(planInputs))
+	}
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
+
 // Read is a structural no-op, for the same reason as accumulator_list's: the
 // framework copies prior state into the response, so a refresh cannot perturb
 // an attribute.
@@ -144,13 +229,8 @@ func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		return
 	}
 
-	var merged []string
-	if !plan.TriggersReset.Equal(state.TriggersReset) {
-		// Reset: discard history and reseed from the planned inputs.
-		merged = accumulate.Merge(nil, planInputs)
-	} else {
-		merged = accumulate.Merge(stateOutputs, planInputs)
-	}
+	reseed := !plan.TriggersReset.Equal(state.TriggersReset)
+	merged := accumulate.NextSetOutputs(reseed, planInputs, stateOutputs)
 
 	outputs, d := setFromStrings(ctx, merged)
 	resp.Diagnostics.Append(d...)

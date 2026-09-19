@@ -172,10 +172,12 @@ Invariants that acceptance tests assert:
 | `outputs` | `list(string)` | Computed | none |
 | `id` | `string` | Computed | `stringplanmodifier.UseStateForUnknown()` |
 
-`outputs` deliberately has no `UseStateForUnknown`: it must plan as unknown
-whenever any input changes, because the applied value depends on the prior
-state. Copying the old value into the plan would show a stale list and then
-fail the apply with an inconsistent-result error.
+`outputs` deliberately has no `UseStateForUnknown`: copying the prior value
+into the plan would show a stale list whenever `inputs` changed. Instead,
+ModifyPlan computes the value the next apply will produce, so `outputs` is
+known at plan time whenever the branch decision can be made. When `inputs`
+(including any single element), `length`, or a trigger is unknown at plan time,
+`outputs` plans as unknown and the apply resolves it. See section 6.1.
 
 `inputs` has no plan modifier, so a change plans an in-place update rather than
 a replacement.
@@ -234,6 +236,18 @@ to any value, and value to a different value, both count as a change; an
 unchanged null does not. `triggers_replacement` is never inspected in Update
 because a change to it plans a replacement and Update is not called.
 
+**ModifyPlan** computes the same value for the plan. It feeds the same branch
+decision (`NextListOutputs`) Update uses: a null state (create) and a
+`triggers_replacement` change both pass `reseed`, as does a `triggers_reset`
+change; an `inputs` change passes `inputsChanged`; otherwise the plan re-trims
+the prior history. On create and replacement ModifyPlan also plans the `id`
+that Create will produce; `UseStateForUnknown` covers `id` for in-place
+updates. When `inputs` (including any single element), `length`, or a trigger
+is unknown at plan time, or the plan is a destroy plan, ModifyPlan leaves
+`outputs` untouched and the framework's unknown marking stands. The guard
+checks elements individually, because Terraform marks unknown collection
+elements one by one: a list holding one unknown element is not itself unknown.
+
 Worked examples, all matching the original specification:
 
 | Step | `inputs` | `length` | `outputs` |
@@ -283,6 +297,15 @@ Append(outputs, inputs []string, length int) []string
 // Merge returns the union of outputs and inputs, first occurrence wins, order
 // stable for deterministic state.
 Merge(outputs, inputs []string) []string
+
+// NextListOutputs is the branch decision shared by Update and ModifyPlan:
+// reseed trims the planned inputs, an inputs change appends to the prior
+// history, otherwise the prior history is re-trimmed.
+NextListOutputs(reseed, inputsChanged bool, planInputs, stateOutputs []string, length int) []string
+
+// NextSetOutputs is the set equivalent: reseed keeps only the planned inputs,
+// otherwise the planned inputs are unioned into the prior set.
+NextSetOutputs(reseed bool, planInputs, stateOutputs []string) []string
 ```
 
 ### 6.4 Read and Delete
@@ -491,11 +514,13 @@ OpenTofu instead.
   Re-submitting a value appends it again; only `accumulator_set` deduplicates.
 - **Two triggers, not one.** `triggers_reset` resets history in place;
   `triggers_replacement` forces a replacement. Both resources carry both.
-- **No `ModifyPlan`.** `outputs` is left unknown at plan time when it will
-  change. Computing the planned value would improve `plan` output but introduces
-  a second implementation of §6 that can disagree with Update and produce
-  inconsistent-result errors. Rejected for now; it can be added later without a
-  state change.
+- **ModifyPlan computes `outputs` at plan time.** An earlier revision rejected
+  ModifyPlan because a second implementation of section 6 could drift away from
+  Update and produce inconsistent-result errors. Update and ModifyPlan now call
+  one shared branch decision (`NextListOutputs` / `NextSetOutputs`), so there is
+  nothing to drift: the plan shows the value the next apply will produce, and
+  unknown `inputs` (including single unknown elements), `length`, or triggers
+  leave `outputs` unknown. The change required no state format change.
 - **Import by JSON seed.** A resource with no external system cannot be
   discovered, so import takes an explicit serialized payload. A plain
   passthrough ID was rejected: it would import an empty resource with no way to

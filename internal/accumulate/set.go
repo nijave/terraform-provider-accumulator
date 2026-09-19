@@ -24,3 +24,19 @@ func Merge(outputs, inputs []string) []string {
 	}
 	return merged
 }
+
+// NextSetOutputs returns the outputs accumulator_set writes for the next
+// apply, whether that apply is planned (ModifyPlan) or performed (Update). It
+// is the whole branch decision of the accumulation algorithm: reseed (a
+// replacement or a triggers_reset change) discards history and seeds outputs
+// from the planned inputs alone; otherwise the planned inputs are unioned into
+// the prior set.
+//
+// Callers pass reseed for a replacement exactly as they pass it for a reset:
+// Create and Update produce the same outputs for both.
+func NextSetOutputs(reseed bool, planInputs, stateOutputs []string) []string {
+	if reseed {
+		return Merge(nil, planInputs)
+	}
+	return Merge(stateOutputs, planInputs)
+}

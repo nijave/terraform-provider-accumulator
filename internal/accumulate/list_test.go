@@ -68,6 +68,48 @@ func TestTrimDoesNotAliasInput(t *testing.T) {
 	}
 }
 
+// TestNextListOutputs pins the branch decision the list resource makes on every
+// apply. Update and ModifyPlan both call it, so its table is the single place
+// the two can drift.
+func TestNextListOutputs(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		reseed        bool
+		inputsChanged bool
+		planInputs    []string
+		stateOutputs  []string
+		length        int
+		want          []string
+	}{
+		"reseed trims the planned inputs":   {true, false, []string{"a", "b", "c"}, []string{"x"}, 2, []string{"b", "c"}},
+		"reseed ignores prior history":      {true, true, []string{"b"}, []string{"a"}, 5, []string{"b"}},
+		"append on inputs change":           {false, true, []string{"c"}, []string{"a", "b"}, 5, []string{"a", "b", "c"}},
+		"append trims the oldest":           {false, true, []string{"c"}, []string{"a", "b"}, 2, []string{"b", "c"}},
+		"inputs change onto empty history":  {false, true, []string{"a"}, nil, 2, []string{"a"}},
+		"empty inputs change keeps history": {false, true, nil, []string{"a"}, 1, []string{"a"}},
+		"length change re-trims history":    {false, false, []string{"a"}, []string{"a", "b", "c"}, 1, []string{"c"}},
+		"grow does not resurrect":           {false, false, []string{"a", "b", "c"}, []string{"b", "c"}, 3, []string{"b", "c"}},
+		"zero length empties":               {false, false, []string{"a"}, []string{"a"}, 0, []string{}},
+		"no change is the identity":         {false, false, []string{"a"}, []string{"a"}, 1, []string{"a"}},
+	}
+
+	for label, tc := range cases {
+		tc := tc
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			got := NextListOutputs(tc.reseed, tc.inputsChanged, tc.planInputs, tc.stateOutputs, tc.length)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("NextListOutputs(%v, %v, %v, %v, %d) = %v, want %v",
+					tc.reseed, tc.inputsChanged, tc.planInputs, tc.stateOutputs, tc.length, got, tc.want)
+			}
+			if got == nil {
+				t.Fatal("NextListOutputs returned nil; it must always return a non-nil slice")
+			}
+		})
+	}
+}
+
 func TestAppend(t *testing.T) {
 	t.Parallel()
 
