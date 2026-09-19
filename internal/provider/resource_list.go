@@ -19,6 +19,7 @@ import (
 var (
 	_ resource.Resource                = (*listResource)(nil)
 	_ resource.ResourceWithImportState = (*listResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*listResource)(nil)
 )
 
 // listResource accumulates inputs across applies, keeping the most recent
@@ -83,9 +84,10 @@ func (r *listResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Computed:    true,
 				ElementType: types.StringType,
 				MarkdownDescription: "The accumulated history, oldest first, trimmed to at most " +
-					"`length` elements. Computed; never configured. Deliberately has no " +
-					"`UseStateForUnknown`: it must plan as unknown whenever an input changes, because " +
-					"the applied value depends on the prior state.",
+					"`length` elements. Computed; never configured. The plan shows the value the " +
+					"next apply will produce, computed against the prior state. When `inputs` " +
+					"(including any single element), `length`, or a trigger is itself unknown at " +
+					"plan time, `outputs` plans as unknown and the apply resolves it.",
 			},
 			"id": schema.StringAttribute{
 				Computed: true,
@@ -115,7 +117,10 @@ func (r *listResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	outputs, d := listFromStrings(ctx, accumulate.Trim(inputs, int(plan.Length.ValueInt64())))
+	// Create is the reseed case of the shared branch decision, so the applied
+	// value has one source on both the plan and apply paths.
+	outputs, d := listFromStrings(ctx,
+		accumulate.NextListOutputs(true, false, inputs, nil, int(plan.Length.ValueInt64())))
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -124,6 +129,88 @@ func (r *listResource) Create(ctx context.Context, req resource.CreateRequest, r
 	plan.Outputs = outputs
 	plan.ID = types.StringValue(accumulate.HashID(inputs))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// ModifyPlan writes the outputs the next apply will produce into the plan, so
+// the plan shows concrete values and downstream resources can plan against
+// them. It runs the same accumulation algorithm as Create and Update, through
+// the same accumulate.NextListOutputs call, so the planned value cannot
+// disagree with the applied one. When any value the branch decision depends on
+// is still unknown, outputs is left unknown and the apply resolves it.
+func (r *listResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// A destroy plan carries no planned state to compute from, and the
+	// framework requires it to stay null.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan listResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// State is null when the resource is being created, and Get refuses a null
+	// state, so it is only read when there is one to read.
+	creating := req.State.Raw.IsNull()
+
+	var state listResourceModel
+	var stateOutputs []string
+	if !creating {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	// An unknown branch input makes the planned outputs unknowable, not merely
+	// unresolved: a triggers_reset that may have changed yields either the
+	// reseeded list or the appended one, and no single planned value can
+	// express that. Leaving outputs untouched keeps the framework's unknown
+	// marking in place until Create or Update resolves the value. Unknown
+	// elements inside inputs count too: Terraform marks them individually.
+	if listContainsUnknown(plan.Inputs) || plan.Length.IsUnknown() ||
+		plan.TriggersReset.IsUnknown() || plan.TriggersReplacement.IsUnknown() {
+		return
+	}
+	if !creating && (state.Inputs.IsUnknown() || state.Outputs.IsUnknown() ||
+		state.TriggersReset.IsUnknown() || state.TriggersReplacement.IsUnknown()) {
+		return
+	}
+
+	planInputs, d := stringsFromList(ctx, plan.Inputs)
+	resp.Diagnostics.Append(d...)
+	if !creating {
+		stateOutputs, d = stringsFromList(ctx, state.Outputs)
+		resp.Diagnostics.Append(d...)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// The branch conditions mirror Update's, with two additions: a null state
+	// means Create runs, and a triggers_replacement change means a replacement
+	// means Create runs. Both seed outputs from the planned inputs alone,
+	// which is what reseed expresses.
+	replacing := !creating && !plan.TriggersReplacement.Equal(state.TriggersReplacement)
+	reseed := creating || replacing || !plan.TriggersReset.Equal(state.TriggersReset)
+	inputsChanged := !creating && !plan.Inputs.Equal(state.Inputs)
+
+	outputs := accumulate.NextListOutputs(reseed, inputsChanged, planInputs, stateOutputs, int(plan.Length.ValueInt64()))
+
+	out, d := listFromStrings(ctx, outputs)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	plan.Outputs = out
+	if creating || replacing {
+		// Create identifies the resource from the planned inputs. An in-place
+		// update keeps the state id; UseStateForUnknown has already resolved
+		// it into the plan by the time ModifyPlan runs.
+		plan.ID = types.StringValue(accumulate.HashID(planInputs))
+	}
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
 // Read is a structural no-op. The framework copies the prior state into the
@@ -155,18 +242,11 @@ func (r *listResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 	length := int(plan.Length.ValueInt64())
 
-	var outputs []string
-	switch {
-	case !plan.TriggersReset.Equal(state.TriggersReset):
-		// Reset: discard history and reseed from the planned inputs.
-		outputs = accumulate.Trim(planInputs, length)
-	case !plan.Inputs.Equal(state.Inputs):
-		// Inputs changed: append the whole new list to the prior history.
-		outputs = accumulate.Append(stateOutputs, planInputs, length)
-	default:
-		// Only length changed: re-trim the existing history.
-		outputs = accumulate.Trim(stateOutputs, length)
-	}
+	// The branch order is pinned by accumulate.NextListOutputs: reset wins over
+	// an inputs change, and an inputs change wins over a length-only re-trim.
+	reseed := !plan.TriggersReset.Equal(state.TriggersReset)
+	inputsChanged := !plan.Inputs.Equal(state.Inputs)
+	outputs := accumulate.NextListOutputs(reseed, inputsChanged, planInputs, stateOutputs, length)
 
 	out, d := listFromStrings(ctx, outputs)
 	resp.Diagnostics.Append(d...)

@@ -7,6 +7,39 @@ import (
 	"testing"
 )
 
+// TestNextSetOutputs pins the branch decision the set resource makes on every
+// apply. Update and ModifyPlan both call it, so its table is the single place
+// the two can drift.
+func TestNextSetOutputs(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		reseed       bool
+		planInputs   []string
+		stateOutputs []string
+		want         []string
+	}{
+		"reseed keeps only the planned inputs": {true, []string{"d"}, []string{"a", "b"}, []string{"d"}},
+		"union appends the planned inputs":     {false, []string{"d"}, []string{"a", "b"}, []string{"a", "b", "d"}},
+		"union is idempotent":                  {false, []string{"a"}, []string{"a", "b"}, []string{"a", "b"}},
+		"union onto empty history":             {false, []string{"d"}, nil, []string{"d"}},
+	}
+
+	for label, tc := range cases {
+		tc := tc
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			got := NextSetOutputs(tc.reseed, tc.planInputs, tc.stateOutputs)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("NextSetOutputs(%v, %v, %v) = %v, want %v", tc.reseed, tc.planInputs, tc.stateOutputs, got, tc.want)
+			}
+			if got == nil {
+				t.Fatal("NextSetOutputs returned nil; it must always return a non-nil slice")
+			}
+		})
+	}
+}
+
 func TestMerge(t *testing.T) {
 	t.Parallel()
 

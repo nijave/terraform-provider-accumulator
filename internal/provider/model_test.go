@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -143,5 +144,30 @@ func TestStringsFromUnknownIsEmpty(t *testing.T) {
 	}
 	if set != nil {
 		t.Fatalf("stringsFromSet(unknown) = %v, want nil", set)
+	}
+}
+
+// TestListContainsUnknown pins the unknown shapes ModifyPlan must guard
+// against. Terraform marks unknown collection elements individually, so a list
+// of one unknown element is not itself unknown: a plain IsUnknown check would
+// miss it and a conversion would raise a diagnostic mid-plan.
+func TestListContainsUnknown(t *testing.T) {
+	t.Parallel()
+
+	for label, list := range map[string]types.List{
+		"known list":              types.ListValueMust(types.StringType, []attr.Value{types.StringValue("a")}),
+		"null list":               types.ListNull(types.StringType),
+		"unknown list":            types.ListUnknown(types.StringType),
+		"list with unknown value": types.ListValueMust(types.StringType, []attr.Value{types.StringValue("a"), types.StringUnknown()}),
+		"list of unknown values":  types.ListValueMust(types.StringType, []attr.Value{types.StringUnknown(), types.StringUnknown()}),
+	} {
+		list := list
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			want := label != "known list" && label != "null list"
+			if got := listContainsUnknown(list); got != want {
+				t.Fatalf("listContainsUnknown(%v) = %v, want %v", list, got, want)
+			}
+		})
 	}
 }

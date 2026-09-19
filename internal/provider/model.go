@@ -36,6 +36,24 @@ func stringsFromSet(ctx context.Context, set types.Set) ([]string, diag.Diagnost
 	return out, diags
 }
 
+// listContainsUnknown reports whether the list itself or any of its elements is
+// unknown. Terraform marks unknown collection elements individually, so a list
+// holding one unknown element is not itself unknown: a plain IsUnknown check
+// misses it, and converting such a list to []string would raise a diagnostic.
+// ModifyPlan uses this to leave outputs unknown whenever inputs are not fully
+// known; Create and Update never run with unknown values.
+func listContainsUnknown(list types.List) bool {
+	if list.IsUnknown() {
+		return true
+	}
+	for _, element := range list.Elements() {
+		if element.IsUnknown() {
+			return true
+		}
+	}
+	return false
+}
+
 // listFromStrings converts a Go slice to a concrete list(string). A nil slice
 // becomes an empty list, never null: an empty accumulated history must be
 // written as [] so state round-trips without a diff against an empty config.

@@ -33,3 +33,26 @@ func Append(outputs, inputs []string, length int) []string {
 	combined = append(combined, inputs...)
 	return Trim(combined, length)
 }
+
+// NextListOutputs returns the outputs accumulator_list writes for the next
+// apply, whether that apply is planned (ModifyPlan) or performed (Update). It
+// is the whole branch decision of the accumulation algorithm:
+//
+//   - reseed (a replacement or a triggers_reset change) discards history and
+//     seeds outputs from the planned inputs alone;
+//   - otherwise an inputs change appends the whole planned list to the prior
+//     history;
+//   - otherwise only length changed and the existing history is re-trimmed.
+//
+// Callers pass reseed for a replacement exactly as they pass it for a reset:
+// Create and Update produce the same outputs for both.
+func NextListOutputs(reseed, inputsChanged bool, planInputs, stateOutputs []string, length int) []string {
+	switch {
+	case reseed:
+		return Trim(planInputs, length)
+	case inputsChanged:
+		return Append(stateOutputs, planInputs, length)
+	default:
+		return Trim(stateOutputs, length)
+	}
+}

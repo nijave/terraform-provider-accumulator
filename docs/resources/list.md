@@ -39,7 +39,7 @@ output "recent_deploys" {
 ### Read-Only
 
 - `id` (String) A stable identifier: the lowercase hex SHA-256 of the canonical JSON encoding of the `inputs` present when the resource was created. Stable across in-place updates; recomputed on replacement.
-- `outputs` (List of String) The accumulated history, oldest first, trimmed to at most `length` elements. Computed; never configured. Deliberately has no `UseStateForUnknown`: it must plan as unknown whenever an input changes, because the applied value depends on the prior state.
+- `outputs` (List of String) The accumulated history, oldest first, trimmed to at most `length` elements. Computed; never configured. The plan shows the value the next apply will produce, computed against the prior state. When `inputs` (including any single element), `length`, or a trigger is itself unknown at plan time, `outputs` plans as unknown and the apply resolves it.
 
 ## Import
 

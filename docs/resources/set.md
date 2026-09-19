@@ -37,7 +37,7 @@ output "seen_hosts" {
 ### Read-Only
 
 - `id` (String) A stable identifier: the lowercase hex SHA-256 of the canonical JSON encoding of the resource's initial values. On create (and replacement) that is the `inputs` list; on import it is the seeded `outputs`, because a set resource seeds no meaningful `inputs`. Stable across in-place updates.
-- `outputs` (Set of String) Every value ever accumulated, each appearing once. Computed; never configured. Deliberately has no `UseStateForUnknown`: it must plan as unknown whenever an input changes, because the applied value depends on the prior state.
+- `outputs` (Set of String) Every value ever accumulated, each appearing once. Computed; never configured. The plan shows the value the next apply will produce, computed against the prior state. When `inputs` (including any single element) or a trigger is itself unknown at plan time, `outputs` plans as unknown and the apply resolves it.
 
 ## Import
 
