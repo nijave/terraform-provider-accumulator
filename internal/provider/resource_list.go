@@ -117,7 +117,10 @@ func (r *listResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	outputs, d := listFromStrings(ctx, accumulate.Trim(inputs, int(plan.Length.ValueInt64())))
+	// Create is the reseed case of the shared branch decision, so the applied
+	// value has one source on both the plan and apply paths.
+	outputs, d := listFromStrings(ctx,
+		accumulate.NextListOutputs(true, false, inputs, nil, int(plan.Length.ValueInt64())))
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return

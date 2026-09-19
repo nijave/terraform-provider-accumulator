@@ -111,7 +111,9 @@ func (r *setResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
-	outputs, d := setFromStrings(ctx, accumulate.Merge(nil, inputs))
+	// Create is the reseed case of the shared branch decision, so the applied
+	// value has one source on both the plan and apply paths.
+	outputs, d := setFromStrings(ctx, accumulate.NextSetOutputs(true, inputs, nil))
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
