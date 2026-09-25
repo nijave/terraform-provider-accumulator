@@ -14,8 +14,9 @@ declarative equivalent of an LRU.
 
 ```hcl
 resource "accumulator_list" "recent_deploys" {
-  inputs = [var.deploy_sha]
-  length = 5
+  inputs        = [var.deploy_sha]
+  length        = 5
+  expires_after = 86400
 }
 
 output "recent_deploys" {
@@ -30,8 +31,20 @@ output "recent_deploys" {
   `length` change re-trims the existing history. `inputs = []` never erases
   history.
 - **`accumulator_set`** remembers every value it has seen, each once, until a
-  `triggers_reset` change or a replacement forgets it. `outputs` is a set, so
-  Terraform does not preserve or promise any element ordering.
+  `triggers_reset` change, a replacement, or (with `expires_after` set)
+  expiry forgets it. `outputs` is a set, so Terraform does not preserve or
+  promise any element ordering.
+
+## Expiration
+
+Both resources accept an optional `expires_after` (seconds). A value that
+leaves `inputs` is removed once `expires_after` seconds have passed; a value
+that stays in `inputs` never expires. The computed `detailed_outputs` map
+reports each value's `expires_at` (RFC 3339) or null. Expiration is lazy and
+realized at refresh: a value is removed when a refresh runs after its time
+has passed, a late-applied saved plan expires nothing its own refresh did
+not already remove, and `-refresh=false` defers removal. See the resource
+documentation for the full clock rules.
 
 Both resources carry `triggers_reset` (discard history and reseed from `inputs`)
 and `triggers_replacement` (force a replacement that reseeds). Both are

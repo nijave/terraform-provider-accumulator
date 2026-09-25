@@ -1,9 +1,11 @@
 # terraform-provider-accumulator
 
-Resources that accumulate a value over successive applies while keeping a fixed
-history length. The accumulated history lives in Terraform/OpenTofu state, so
-there is no endpoint, no credential, and no external store to stand up: the
-provider is two resources and a small amount of pure list and set logic.
+Resources that accumulate a value over successive applies — a list bounded by
+a fixed history length, and a set — with an optional per-value TTL
+(`expires_after`) for values that stop being supplied. The accumulated
+history lives in Terraform/OpenTofu state, so there is no endpoint, no
+credential, and no external store to stand up: the provider is two resources
+and a small amount of pure list and set logic.
 
 ## Example
 
