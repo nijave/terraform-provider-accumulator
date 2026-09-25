@@ -18,6 +18,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
@@ -94,8 +95,32 @@ func TestProviderSchema(t *testing.T) {
 		t.Fatal("GetProviderSchema returned no provider schema")
 	}
 	for _, name := range []string{"accumulator_list", "accumulator_set"} {
-		if _, ok := resp.ResourceSchemas[name]; !ok {
+		rs, ok := resp.ResourceSchemas[name]
+		if !ok {
 			t.Errorf("provider did not register resource %q", name)
+			continue
+		}
+		attrs := map[string]*tfprotov6.SchemaAttribute{}
+		for _, a := range rs.Block.Attributes {
+			attrs[a.Name] = a
+		}
+		expiresAfter, ok := attrs["expires_after"]
+		switch {
+		case !ok:
+			t.Errorf("%s: missing expires_after attribute", name)
+		case !expiresAfter.Optional || expiresAfter.Required || expiresAfter.Computed:
+			t.Errorf("%s: expires_after must be Optional only, got %+v", name, expiresAfter)
+		case !expiresAfter.Type.Is(tftypes.Number):
+			t.Errorf("%s: expires_after type = %s, want number", name, expiresAfter.Type)
+		}
+		detailed, ok := attrs["detailed_outputs"]
+		switch {
+		case !ok:
+			t.Errorf("%s: missing detailed_outputs attribute", name)
+		case !detailed.Computed || detailed.Optional || detailed.Required:
+			t.Errorf("%s: detailed_outputs must be Computed only, got %+v", name, detailed)
+		case !detailed.Type.Is(tftypes.Map{ElementType: tftypes.Object{AttributeTypes: map[string]tftypes.Type{"expires_at": tftypes.String}}}):
+			t.Errorf("%s: detailed_outputs type = %s, want map(object({expires_at=string}))", name, detailed.Type)
 		}
 	}
 }

@@ -359,9 +359,6 @@ func TestStateGetToleratesMissingExpirationAttributes(t *testing.T) {
 		"list": {listSchema, listOld},
 	} {
 		t.Run(label, func(t *testing.T) {
-			if _, ok := tc.schema.GetAttributes()["expires_after"]; !ok {
-				t.Skip("expires_after not in the schema yet; re-run after Tasks 3 and 4")
-			}
 			ctx := context.Background()
 			st := tfsdk.State{Raw: tc.raw, Schema: tc.schema}
 			// GetAttribute, not Get: the raw state predates the new
