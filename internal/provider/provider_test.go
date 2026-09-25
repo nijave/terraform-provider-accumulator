@@ -10,15 +10,19 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/statecheck"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 
 	"github.com/nijave/terraform-provider-accumulator/internal/provider"
 )
@@ -242,4 +246,67 @@ func expectEmptyAfterRefresh() resource.ConfigPlanChecks {
 	return resource.ConfigPlanChecks{
 		PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 	}
+}
+
+// nullDetail is the knownvalue check for one detailed_outputs entry whose
+// expires_at is null: the value cannot expire.
+func nullDetail() knownvalue.Check {
+	return knownvalue.ObjectExact(map[string]knownvalue.Check{
+		"expires_at": knownvalue.Null(),
+	})
+}
+
+// stampedDetail matches one detailed_outputs entry whose expires_at is a
+// non-null RFC 3339 UTC timestamp. The concrete instant comes from the
+// apply clock, so acceptance tests match the shape, not the time.
+func stampedDetail() knownvalue.Check {
+	return knownvalue.ObjectExact(map[string]knownvalue.Check{
+		"expires_at": knownvalue.StringRegexp(regexp.MustCompile(
+			`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`)),
+	})
+}
+
+// expectDetailed checks the whole detailed_outputs value in state.
+func expectDetailed(addr string, entries map[string]knownvalue.Check) statecheck.StateCheck {
+	return statecheck.ExpectKnownValue(addr, tfjsonpath.New("detailed_outputs"),
+		knownvalue.MapExact(entries))
+}
+
+// expectPlanDetailed checks the planned detailed_outputs is known and
+// matches: the plan must show the map the apply will produce, not "(known
+// after apply)".
+func expectPlanDetailed(addr string, entries map[string]knownvalue.Check) plancheck.PlanCheck {
+	return plancheck.ExpectKnownValue(addr, tfjsonpath.New("detailed_outputs"),
+		knownvalue.MapExact(entries))
+}
+
+// expectPlanDetailedPartial checks the planned detailed_outputs contains
+// these entries and no others it must contradict. It is for plans where some
+// entries are fresh and legitimately unknown until the apply stamps them;
+// those entries are simply not named.
+func expectPlanDetailedPartial(addr string, entries map[string]knownvalue.Check) plancheck.PlanCheck {
+	return plancheck.ExpectKnownValue(addr, tfjsonpath.New("detailed_outputs"),
+		knownvalue.MapPartial(entries))
+}
+
+// expectPlanDetailUnknown checks that one planned detailed_outputs entry's
+// expires_at is unknown: the value is being stamped by this apply, so no
+// concrete timestamp can be known at plan time. expectPlanDetailedPartial
+// names only the entries that must be null, so a known wrong stamp on a fresh
+// entry would slip past it; this pins the fresh entry's shape instead.
+func expectPlanDetailUnknown(addr, value string) plancheck.PlanCheck {
+	return plancheck.ExpectUnknownValue(addr,
+		tfjsonpath.New("detailed_outputs").AtMapKey(value).AtMapKey("expires_at"))
+}
+
+// sleepPastExpiry is a TestStep.PreConfig that waits out the short
+// expires_after values the expiration tests use (1s), so the next step's
+// plan sees the value as expired.
+func sleepPastExpiry() func() {
+	return func() { time.Sleep(2 * time.Second) }
+}
+
+// setDetail builds a one-entry map for expectDetailed/expectPlanDetailed.
+func setDetail(value string, check knownvalue.Check) map[string]knownvalue.Check {
+	return map[string]knownvalue.Check{value: check}
 }
