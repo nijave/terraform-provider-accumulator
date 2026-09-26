@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
@@ -70,10 +71,14 @@ func TestAccListImport(t *testing.T) {
 			{
 				// The settling apply. length goes null -> 3 and outputs is
 				// re-trimmed from the seeded value; after that the plan is
-				// empty.
+				// empty. Import seeds all-null detailed_outputs (spec
+				// section 8), which is what keeps this plan empty.
 				Config: config,
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectListOutputs("a", "b", "c"),
+					expectDetailed("accumulator_list.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": nullDetail(), "c": nullDetail(),
+					}),
 				},
 				ConfigPlanChecks: expectEmptyAfterRefresh(),
 			},

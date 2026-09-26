@@ -313,6 +313,12 @@ NextSetOutputs(reseed bool, planInputs, stateOutputs []string) []string
 
 ### 6.4 Read and Delete
 
+> **Superseded in part (2026-09-24):** with the `expires_after` feature
+> (see `2026-09-23-accumulator-expiration-design.md`), `Read` culls expired
+> values at refresh. Delete remains a no-op, and refresh still never
+> perturbs anything except removing values whose `expires_at` has passed.
+> Everything below describes the pre-expiration design.
+
 Both are structural no-ops, because state is the only store. The framework
 copies the prior state into the Read response before calling `Read`, so an
 empty method returns it unchanged and refresh can never perturb an attribute;
