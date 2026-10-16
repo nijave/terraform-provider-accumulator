@@ -166,12 +166,12 @@ func (r *listResource) Create(ctx context.Context, req resource.CreateRequest, r
 	}
 
 	merged := accumulate.NextListOutputs(true, false, inputs, nil, int(plan.Length.ValueInt64()))
-	survivors, stamps := accumulate.ApplyExpiration(merged, inputs, nil, nil,
+	survivors, expiry := accumulate.ApplyExpiration(merged, inputs, nil, nil,
 		int64Ptr(plan.ExpiresAfter), clockNow())
 
 	out, d := listFromStrings(ctx, survivors)
 	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, survivors, stamps)
+	detailed, d := mapFromStamps(ctx, survivors, stamps{Expires: expiry})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -210,7 +210,7 @@ func (r *listResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRe
 
 	var state listResourceModel
 	var stateOutputs []string
-	var priorStamps map[string]time.Time
+	var priorStamps stamps
 	var priorExpiresAfter *int64
 	if !creating {
 		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -266,12 +266,12 @@ func (r *listResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRe
 	// exactly. ClassifyStamps decides which detailed_outputs entries are
 	// known (prior stamps under an unchanged expires_after) and which stay
 	// unknown until the apply stamps them (S1, S3, S4, S5).
-	keep, fresh := accumulate.ClassifyStamps(merged, planInputs, priorStamps,
+	keep, fresh := accumulate.ClassifyStamps(merged, planInputs, priorStamps.Expires,
 		priorExpiresAfter, int64Ptr(plan.ExpiresAfter))
 
 	out, d := listFromStrings(ctx, merged)
 	resp.Diagnostics.Append(d...)
-	detailed, d := classifiedMap(ctx, merged, keep, fresh)
+	detailed, d := classifiedMap(ctx, merged, classified{KeepExpires: keep, FreshExpires: fresh})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -305,20 +305,20 @@ func (r *listResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 
 	values, d := stringsFromList(ctx, state.Outputs)
 	resp.Diagnostics.Append(d...)
-	stamps, d := stampsFromMap(ctx, state.DetailedOutputs)
+	stored, d := stampsFromMap(ctx, state.DetailedOutputs)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	survivors, kept := accumulate.FilterExpired(values, stamps, clockNow())
+	survivors, kept := accumulate.FilterExpired(values, stored.Expires, clockNow())
 	if len(survivors) == len(values) {
 		return
 	}
 
 	out, d := listFromStrings(ctx, survivors)
 	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, survivors, kept)
+	detailed, d := mapFromStamps(ctx, survivors, stamps{Expires: kept})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -362,16 +362,16 @@ func (r *listResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			return
 		}
 		priorE, plannedE := int64Ptr(state.ExpiresAfter), int64Ptr(plan.ExpiresAfter)
-		keep, fresh := accumulate.ClassifyStamps(planOutputs, planInputs, priorStamps, priorE, plannedE)
-		stamps := make(map[string]time.Time, len(keep)+len(fresh))
+		keep, fresh := accumulate.ClassifyStamps(planOutputs, planInputs, priorStamps.Expires, priorE, plannedE)
+		expiry := make(map[string]time.Time, len(keep)+len(fresh))
 		for v, stamp := range keep {
-			stamps[v] = stamp
+			expiry[v] = stamp
 		}
 		now := clockNow()
 		for v := range fresh {
-			stamps[v] = accumulate.FreshStamp(priorStamps, priorE, plannedE, now, v)
+			expiry[v] = accumulate.FreshStamp(priorStamps.Expires, priorE, plannedE, now, v)
 		}
-		detailed, d := mapFromStamps(ctx, planOutputs, stamps)
+		detailed, d := mapFromStamps(ctx, planOutputs, stamps{Expires: expiry})
 		resp.Diagnostics.Append(d...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -401,12 +401,12 @@ func (r *listResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	reseed := !plan.TriggersReset.Equal(state.TriggersReset)
 	inputsChanged := !plan.Inputs.Equal(state.Inputs)
 	merged := accumulate.NextListOutputs(reseed, inputsChanged, planInputs, stateOutputs, length)
-	survivors, stamps := accumulate.ApplyExpiration(merged, planInputs, priorStamps,
+	survivors, expiry := accumulate.ApplyExpiration(merged, planInputs, priorStamps.Expires,
 		int64Ptr(state.ExpiresAfter), int64Ptr(plan.ExpiresAfter), clockNow())
 
 	out, d := listFromStrings(ctx, survivors)
 	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, survivors, stamps)
+	detailed, d := mapFromStamps(ctx, survivors, stamps{Expires: expiry})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -444,7 +444,7 @@ func (r *listResource) ImportState(ctx context.Context, req resource.ImportState
 		return
 	}
 
-	detailed, d := mapFromStamps(ctx, seed.Outputs, nil)
+	detailed, d := mapFromStamps(ctx, seed.Outputs, stamps{})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return

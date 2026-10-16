@@ -119,8 +119,31 @@ func TestProviderSchema(t *testing.T) {
 			t.Errorf("%s: missing detailed_outputs attribute", name)
 		case !detailed.Computed || detailed.Optional || detailed.Required:
 			t.Errorf("%s: detailed_outputs must be Computed only, got %+v", name, detailed)
-		case !detailed.Type.Is(tftypes.Map{ElementType: tftypes.Object{AttributeTypes: map[string]tftypes.Type{"expires_at": tftypes.String}}}):
-			t.Errorf("%s: detailed_outputs type = %s, want map(object({expires_at=string}))", name, detailed.Type)
+		case !detailed.Type.Is(tftypes.Map{ElementType: tftypes.Object{AttributeTypes: map[string]tftypes.Type{
+			"expires_at": tftypes.String, "visible_at": tftypes.String}}}):
+			t.Errorf("%s: detailed_outputs type = %s, want map(object({expires_at=string, visible_at=string}))", name, detailed.Type)
+		}
+		delayedFor, ok := attrs["delayed_for"]
+		switch {
+		case !ok:
+			t.Errorf("%s: missing delayed_for attribute", name)
+		case !delayedFor.Optional || delayedFor.Required || delayedFor.Computed:
+			t.Errorf("%s: delayed_for must be Optional only, got %+v", name, delayedFor)
+		case !delayedFor.Type.Is(tftypes.Number):
+			t.Errorf("%s: delayed_for type = %s, want number", name, delayedFor.Type)
+		}
+		accumulated, ok := attrs["accumulated"]
+		wantAccumulated := tftypes.Type(tftypes.Set{ElementType: tftypes.String})
+		if name == "accumulator_list" {
+			wantAccumulated = tftypes.List{ElementType: tftypes.String}
+		}
+		switch {
+		case !ok:
+			t.Errorf("%s: missing accumulated attribute", name)
+		case !accumulated.Computed || accumulated.Optional || accumulated.Required:
+			t.Errorf("%s: accumulated must be Computed only, got %+v", name, accumulated)
+		case !accumulated.Type.Is(wantAccumulated):
+			t.Errorf("%s: accumulated type = %s, want %s", name, accumulated.Type, wantAccumulated)
 		}
 	}
 }
@@ -273,22 +296,55 @@ func expectEmptyAfterRefresh() resource.ConfigPlanChecks {
 	}
 }
 
-// nullDetail is the knownvalue check for one detailed_outputs entry whose
-// expires_at is null: the value cannot expire.
-func nullDetail() knownvalue.Check {
+// rfc3339 matches an RFC 3339 UTC timestamp at second precision. The
+// concrete instant comes from the apply clock, so acceptance tests match
+// the shape, not the time.
+var rfc3339 = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`)
+
+func detail(expires, visible knownvalue.Check) knownvalue.Check {
 	return knownvalue.ObjectExact(map[string]knownvalue.Check{
-		"expires_at": knownvalue.Null(),
+		"expires_at": expires,
+		"visible_at": visible,
 	})
 }
 
-// stampedDetail matches one detailed_outputs entry whose expires_at is a
-// non-null RFC 3339 UTC timestamp. The concrete instant comes from the
-// apply clock, so acceptance tests match the shape, not the time.
+// nullDetail is one detailed_outputs entry with both stamps null: the
+// value is visible and cannot expire.
+func nullDetail() knownvalue.Check { return detail(knownvalue.Null(), knownvalue.Null()) }
+
+// stampedDetail is a visible value with an expires_at stamp.
 func stampedDetail() knownvalue.Check {
-	return knownvalue.ObjectExact(map[string]knownvalue.Check{
-		"expires_at": knownvalue.StringRegexp(regexp.MustCompile(
-			`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`)),
-	})
+	return detail(knownvalue.StringRegexp(rfc3339), knownvalue.Null())
+}
+
+// pendingDetail is a value hidden behind a visible_at stamp that cannot
+// expire (it is in inputs).
+func pendingDetail() knownvalue.Check {
+	return detail(knownvalue.Null(), knownvalue.StringRegexp(rfc3339))
+}
+
+// pendingLeaverDetail is a value that is both pending and expiring (spec
+// T5).
+func pendingLeaverDetail() knownvalue.Check {
+	return detail(knownvalue.StringRegexp(rfc3339), knownvalue.StringRegexp(rfc3339))
+}
+
+// expectPlanDetailVisibleUnknown checks one planned entry's visible_at is
+// unknown: the value enters at this apply and the apply stamps it.
+func expectPlanDetailVisibleUnknown(addr, value string) plancheck.PlanCheck {
+	return plancheck.ExpectUnknownValue(addr,
+		tfjsonpath.New("detailed_outputs").AtMapKey(value).AtMapKey("visible_at"))
+}
+
+// expectAccumulated checks the whole accumulated value in state.
+func expectAccumulated(addr string, check knownvalue.Check) statecheck.StateCheck {
+	return statecheck.ExpectKnownValue(addr, tfjsonpath.New("accumulated"), check)
+}
+
+// expectPlanAccumulated checks the planned accumulated is known and
+// matches: the plan must show the store the apply will produce.
+func expectPlanAccumulated(addr string, check knownvalue.Check) plancheck.PlanCheck {
+	return plancheck.ExpectKnownValue(addr, tfjsonpath.New("accumulated"), check)
 }
 
 // expectDetailed checks the whole detailed_outputs value in state.

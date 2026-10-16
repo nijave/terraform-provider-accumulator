@@ -183,42 +183,41 @@ func TestMapFromStampsAndBack(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
 
-	outputs := []string{"a", "b", "c"}
-	stamps := map[string]time.Time{
-		"b": base.Add(5 * time.Minute),
-		"c": base.Add(time.Hour),
+	values := []string{"a", "b", "c", "d"}
+	in := stamps{
+		Expires: map[string]time.Time{"b": base.Add(5 * time.Minute), "d": base.Add(time.Hour)},
+		Visible: map[string]time.Time{"c": base.Add(time.Minute), "d": base.Add(30 * time.Second)},
 	}
-	m, diags := mapFromStamps(ctx, outputs, stamps)
+	m, diags := mapFromStamps(ctx, values, in)
 	if diags.HasError() {
 		t.Fatalf("mapFromStamps: %+v", diags)
 	}
 	if m.IsNull() || m.IsUnknown() {
 		t.Fatalf("mapFromStamps returned %v; it must be concrete", m)
 	}
-	if got := len(m.Elements()); got != 3 {
-		t.Fatalf("map has %d entries, want 3", got)
+	if got := len(m.Elements()); got != 4 {
+		t.Fatalf("map has %d entries, want 4", got)
 	}
 
 	parsed, diags := stampsFromMap(ctx, m)
 	if diags.HasError() {
 		t.Fatalf("stampsFromMap: %+v", diags)
 	}
-	want := map[string]time.Time{
-		"b": base.Add(5 * time.Minute),
-		"c": base.Add(time.Hour),
+	if !reflect.DeepEqual(parsed, in) {
+		t.Fatalf("round trip = %+v, want %+v", parsed, in)
 	}
-	if !reflect.DeepEqual(parsed, want) {
-		t.Fatalf("round trip = %v, want %v", parsed, want)
-	}
-
-	// The null entry ("a") must not appear: absence is the null stamp.
-	if _, ok := parsed["a"]; ok {
+	// The all-null entry ("a") must not appear in either map: absence is
+	// the null stamp.
+	if _, ok := parsed.Expires["a"]; ok {
 		t.Fatal("null expires_at round-tripped as a stamp")
+	}
+	if _, ok := parsed.Visible["a"]; ok {
+		t.Fatal("null visible_at round-tripped as a stamp")
 	}
 }
 
 func TestMapFromStampsIsNeverNull(t *testing.T) {
-	m, diags := mapFromStamps(context.Background(), nil, nil)
+	m, diags := mapFromStamps(context.Background(), nil, stamps{})
 	if diags.HasError() {
 		t.Fatalf("mapFromStamps: %+v", diags)
 	}
@@ -230,16 +229,19 @@ func TestMapFromStampsIsNeverNull(t *testing.T) {
 	}
 }
 
-// TestClassifiedMap pins the plan-shape split: keepers carry the prior
-// stamp, fresh entries are unknown (the apply stamps them), and everything
-// else is null. The map itself stays known.
+// TestClassifiedMap pins the plan-shape split for both stamp kinds: keepers
+// carry the prior stamp, fresh entries are unknown (the apply stamps them),
+// and everything else is null. The map itself stays known.
 func TestClassifiedMap(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
 
-	m, diags := classifiedMap(ctx, []string{"a", "b", "c"},
-		map[string]time.Time{"b": base.Add(5 * time.Minute)},
-		map[string]struct{}{"c": {}})
+	m, diags := classifiedMap(ctx, []string{"a", "b", "c", "d"}, classified{
+		KeepExpires:  map[string]time.Time{"b": base.Add(5 * time.Minute)},
+		FreshExpires: map[string]struct{}{"c": {}},
+		KeepVisible:  map[string]time.Time{"c": base.Add(time.Minute)},
+		FreshVisible: map[string]struct{}{"d": {}},
+	})
 	if diags.HasError() {
 		t.Fatalf("classifiedMap: %+v", diags)
 	}
@@ -248,54 +250,93 @@ func TestClassifiedMap(t *testing.T) {
 	}
 
 	elems := m.Elements()
-	if got := len(elems); got != 3 {
-		t.Fatalf("map has %d entries, want 3", got)
+	if got := len(elems); got != 4 {
+		t.Fatalf("map has %d entries, want 4", got)
 	}
-	expiresAt := func(v string) types.String {
+	attrOf := func(v, name string) types.String {
 		t.Helper()
 		obj, ok := elems[v].(types.Object)
 		if !ok {
 			t.Fatalf("entry %q is %T, want types.Object", v, elems[v])
 		}
-		s, ok := obj.Attributes()["expires_at"].(types.String)
+		s, ok := obj.Attributes()[name].(types.String)
 		if !ok {
-			t.Fatalf("entry %q expires_at is %T, want types.String", v, obj.Attributes()["expires_at"])
+			t.Fatalf("entry %q %s is %T, want types.String", v, name, obj.Attributes()[name])
 		}
 		return s
 	}
 
-	if s := expiresAt("a"); !s.IsNull() {
+	if s := attrOf("a", "expires_at"); !s.IsNull() {
 		t.Errorf("a expires_at = %v, want null", s)
 	}
-	if s := expiresAt("b"); s.ValueString() != base.Add(5*time.Minute).Format(time.RFC3339) {
-		t.Errorf("b expires_at = %q, want %q", s.ValueString(), base.Add(5*time.Minute).Format(time.RFC3339))
+	if s := attrOf("a", "visible_at"); !s.IsNull() {
+		t.Errorf("a visible_at = %v, want null", s)
 	}
-	if s := expiresAt("c"); !s.IsUnknown() {
+	if s := attrOf("b", "expires_at"); s.ValueString() != base.Add(5*time.Minute).Format(time.RFC3339) {
+		t.Errorf("b expires_at = %q, want the kept stamp", s.ValueString())
+	}
+	if s := attrOf("c", "expires_at"); !s.IsUnknown() {
 		t.Errorf("c expires_at = %v, want unknown", s)
+	}
+	if s := attrOf("c", "visible_at"); s.ValueString() != base.Add(time.Minute).Format(time.RFC3339) {
+		t.Errorf("c visible_at = %q, want the kept stamp", s.ValueString())
+	}
+	if s := attrOf("d", "visible_at"); !s.IsUnknown() {
+		t.Errorf("d visible_at = %v, want unknown", s)
+	}
+	if s := attrOf("d", "expires_at"); !s.IsNull() {
+		t.Errorf("d expires_at = %v, want null", s)
 	}
 }
 
 func TestStampsFromMapNullAndUnknownAreEmpty(t *testing.T) {
 	for _, m := range []types.Map{types.MapNull(detailedObjectType), types.MapUnknown(detailedObjectType)} {
-		stamps, diags := stampsFromMap(context.Background(), m)
+		got, diags := stampsFromMap(context.Background(), m)
 		if diags.HasError() {
 			t.Fatalf("stampsFromMap(%v): %+v", m, diags)
 		}
-		if len(stamps) != 0 {
-			t.Fatalf("stampsFromMap(%v) = %v, want empty", m, stamps)
+		if len(got.Expires) != 0 || len(got.Visible) != 0 {
+			t.Fatalf("stampsFromMap(%v) = %+v, want empty maps", m, got)
 		}
 	}
 }
 
 func TestStampsFromMapRejectsGarbageTimestamp(t *testing.T) {
-	m := types.MapValueMust(detailedObjectType, map[string]attr.Value{
-		"b": types.ObjectValueMust(detailedObjectType.AttrTypes, map[string]attr.Value{
-			"expires_at": types.StringValue("not-a-timestamp"),
+	for _, name := range []string{"expires_at", "visible_at"} {
+		attrs := map[string]attr.Value{
+			"expires_at": types.StringNull(),
+			"visible_at": types.StringNull(),
+		}
+		attrs[name] = types.StringValue("not-a-timestamp")
+		m := types.MapValueMust(detailedObjectType, map[string]attr.Value{
+			"b": types.ObjectValueMust(detailedObjectType.AttrTypes, attrs),
+		})
+		if _, diags := stampsFromMap(context.Background(), m); !diags.HasError() {
+			t.Fatalf("stampsFromMap accepted a malformed %s; it must diagnose", name)
+		}
+	}
+}
+
+// TestStampsFromMapToleratesMissingVisibleAt pins spec section 9: an entry
+// written before visible_at existed has no such attribute at all. The
+// framework fills a missing object attribute with null on decode, but the
+// accessor must also tolerate a raw object that lacks the key.
+func TestStampsFromMapToleratesMissingVisibleAt(t *testing.T) {
+	oldType := types.ObjectType{AttrTypes: map[string]attr.Type{"expires_at": types.StringType}}
+	m := types.MapValueMust(oldType, map[string]attr.Value{
+		"b": types.ObjectValueMust(oldType.AttrTypes, map[string]attr.Value{
+			"expires_at": types.StringValue("2026-09-23T10:05:00Z"),
 		}),
 	})
-	_, diags := stampsFromMap(context.Background(), m)
-	if !diags.HasError() {
-		t.Fatal("stampsFromMap accepted a malformed timestamp; it must diagnose")
+	got, diags := stampsFromMap(context.Background(), m)
+	if diags.HasError() {
+		t.Fatalf("stampsFromMap on a pre-delay entry: %+v", diags)
+	}
+	if len(got.Visible) != 0 {
+		t.Fatalf("Visible = %v, want empty", got.Visible)
+	}
+	if _, ok := got.Expires["b"]; !ok {
+		t.Fatal("expires_at of the pre-delay entry was lost")
 	}
 }
 
@@ -312,12 +353,12 @@ func TestInt64Ptr(t *testing.T) {
 	}
 }
 
-// TestStateGetToleratesMissingExpirationAttributes pins spec section 9:
-// state written by the pre-expiration provider lacks expires_after and
-// detailed_outputs entirely, and Get must unmarshal it with both null
-// rather than erroring. If this test fails, the correct fix is an
-// UpgradeState implementation, not a schema change.
-func TestStateGetToleratesMissingExpirationAttributes(t *testing.T) {
+// TestStateGetToleratesMissingDelayAttributes pins spec section 9: state
+// written by the pre-delay provider lacks expires_after, detailed_outputs,
+// accumulated, and delayed_for entirely, and Get must unmarshal it with all
+// of them null rather than erroring. If this test fails, the correct fix is
+// an UpgradeState implementation, not a schema change.
+func TestStateGetToleratesMissingDelayAttributes(t *testing.T) {
 	setSchema := resourceSchema(t, &setResource{})
 	listSchema := resourceSchema(t, &listResource{})
 
@@ -352,11 +393,12 @@ func TestStateGetToleratesMissingExpirationAttributes(t *testing.T) {
 	})
 
 	for label, tc := range map[string]struct {
-		schema schema.Schema
-		raw    tftypes.Value
+		schema          schema.Schema
+		raw             tftypes.Value
+		accumulatedType tftypes.Type
 	}{
-		"set":  {setSchema, setOld},
-		"list": {listSchema, listOld},
+		"set":  {setSchema, setOld, tftypes.Set{ElementType: stringType}},
+		"list": {listSchema, listOld, tftypes.List{ElementType: stringType}},
 	} {
 		t.Run(label, func(t *testing.T) {
 			ctx := context.Background()
@@ -368,11 +410,11 @@ func TestStateGetToleratesMissingExpirationAttributes(t *testing.T) {
 			// (fwschemadata.ValueAtPath ignores tftypes.ErrInvalidStep).
 			var expiresAfter types.Int64
 			if diags := st.GetAttribute(ctx, path.Root("expires_after"), &expiresAfter); diags.HasError() {
-				t.Fatalf("GetAttribute(expires_after) on pre-expiration state shape: %+v", diags)
+				t.Fatalf("GetAttribute(expires_after) on pre-delay state shape: %+v", diags)
 			}
 			var detailedOutputs types.Map
 			if diags := st.GetAttribute(ctx, path.Root("detailed_outputs"), &detailedOutputs); diags.HasError() {
-				t.Fatalf("GetAttribute(detailed_outputs) on pre-expiration state shape: %+v", diags)
+				t.Fatalf("GetAttribute(detailed_outputs) on pre-delay state shape: %+v", diags)
 			}
 			if !expiresAfter.IsNull() {
 				t.Errorf("ExpiresAfter = %v, want null", expiresAfter)
@@ -380,7 +422,67 @@ func TestStateGetToleratesMissingExpirationAttributes(t *testing.T) {
 			if !detailedOutputs.IsNull() {
 				t.Errorf("DetailedOutputs = %v, want null", detailedOutputs)
 			}
+			// delayed_for and accumulated are not in the served schema until
+			// Tasks 3 and 4 wire them, and GetAttribute errors on a path the
+			// schema lacks. The pre-feature-state guarantee they pin is the
+			// same as the one above, so decode against a copy of the schema
+			// with those two attributes added, which is the shape Tasks 3
+			// and 4 will serve.
+			augmented := tc.schema
+			attrs := make(map[string]schema.Attribute, len(tc.schema.Attributes)+2)
+			for name, a := range tc.schema.Attributes {
+				attrs[name] = a
+			}
+			attrs["delayed_for"] = schema.Int64Attribute{Optional: true}
+			switch label {
+			case "set":
+				attrs["accumulated"] = schema.SetAttribute{ElementType: types.StringType, Computed: true}
+			case "list":
+				attrs["accumulated"] = schema.ListAttribute{ElementType: types.StringType, Computed: true}
+			}
+			augmented.Attributes = attrs
+			st = tfsdk.State{Raw: tc.raw, Schema: augmented}
+			var delayedFor types.Int64
+			if diags := st.GetAttribute(ctx, path.Root("delayed_for"), &delayedFor); diags.HasError() {
+				t.Fatalf("GetAttribute(delayed_for) on pre-delay state shape: %+v", diags)
+			}
+			if !delayedFor.IsNull() {
+				t.Errorf("DelayedFor = %v, want null", delayedFor)
+			}
+			// accumulated is a set on accumulator_set and a list on
+			// accumulator_list, so the decode target changes with the label.
+			switch label {
+			case "set":
+				var accumulated types.Set
+				if diags := st.GetAttribute(ctx, path.Root("accumulated"), &accumulated); diags.HasError() {
+					t.Fatalf("GetAttribute(accumulated) on pre-delay state shape: %+v", diags)
+				}
+				assertNullAccumulated(t, accumulated, tc.accumulatedType)
+			case "list":
+				var accumulated types.List
+				if diags := st.GetAttribute(ctx, path.Root("accumulated"), &accumulated); diags.HasError() {
+					t.Fatalf("GetAttribute(accumulated) on pre-delay state shape: %+v", diags)
+				}
+				assertNullAccumulated(t, accumulated, tc.accumulatedType)
+			}
 		})
+	}
+}
+
+// assertNullAccumulated asserts the decoded accumulated is a null of the
+// expected underlying tftypes type: the missing attribute came back as the
+// schema's null, not an error or a concrete empty value.
+func assertNullAccumulated(t *testing.T, accumulated attr.Value, wantType tftypes.Type) {
+	t.Helper()
+	if !accumulated.IsNull() {
+		t.Errorf("Accumulated = %v, want null", accumulated)
+	}
+	raw, err := accumulated.ToTerraformValue(context.Background())
+	if err != nil {
+		t.Fatalf("ToTerraformValue on the decoded accumulated: %v", err)
+	}
+	if want := tftypes.NewValue(wantType, nil); !raw.Equal(want) {
+		t.Errorf("decoded accumulated raw value = %s, want %s", raw, want)
 	}
 }
 
