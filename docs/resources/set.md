@@ -3,23 +3,28 @@
 page_title: "accumulator_set Resource - accumulator"
 subcategory: ""
 description: |-
-  Accumulates inputs across applies into a deduplicated outputs set. Every value ever seen is retained once, and a value is forgotten by a triggers_reset change, a replacement, or — when expires_after is set — expiry after the TTL; see expires_after for the clock rules. inputs is a list, matching the shape users write in configuration. outputs is a set, so Terraform does not preserve or promise any ordering of its elements; only the membership is meaningful.
+  Accumulates inputs across applies into a deduplicated outputs set. Every value ever seen is retained once, and a value is forgotten by a triggers_reset change, a replacement, or — when expires_after is set — expiry after the TTL; see expires_after for the clock rules. With delayed_for set, a newly supplied value lands in accumulated at once but joins outputs only after the delay; see delayed_for for the clock rules. inputs is a list, matching the shape users write in configuration. outputs is a set, so Terraform does not preserve or promise any ordering of its elements; only the membership is meaningful.
 ---
 
 # accumulator_set (Resource)
 
-Accumulates `inputs` across applies into a deduplicated `outputs` set. Every value ever seen is retained once, and a value is forgotten by a `triggers_reset` change, a replacement, or — when `expires_after` is set — expiry after the TTL; see `expires_after` for the clock rules. `inputs` is a list, matching the shape users write in configuration. `outputs` is a set, so Terraform does not preserve or promise any ordering of its elements; only the membership is meaningful.
+Accumulates `inputs` across applies into a deduplicated `outputs` set. Every value ever seen is retained once, and a value is forgotten by a `triggers_reset` change, a replacement, or — when `expires_after` is set — expiry after the TTL; see `expires_after` for the clock rules. With `delayed_for` set, a newly supplied value lands in `accumulated` at once but joins `outputs` only after the delay; see `delayed_for` for the clock rules. `inputs` is a list, matching the shape users write in configuration. `outputs` is a set, so Terraform does not preserve or promise any ordering of its elements; only the membership is meaningful.
 
 ## Example Usage
 
 ```terraform
 resource "accumulator_set" "seen_hosts" {
   inputs        = [var.hostname]
+  delayed_for   = 600
   expires_after = 3600
 }
 
 output "seen_hosts" {
   value = accumulator_set.seen_hosts.outputs
+}
+
+output "seen_hosts_all" {
+  value = accumulator_set.seen_hosts.accumulated
 }
 
 output "seen_hosts_detail" {
@@ -36,15 +41,17 @@ output "seen_hosts_detail" {
 
 ### Optional
 
+- `delayed_for` (Number) How many seconds a value waits in `accumulated` before it appears in `outputs`. The apply that first accumulates a value stamps its `visible_at` as now plus `delayed_for` and leaves it out of `outputs`; the reveal is realized at refresh: a value joins `outputs` when a refresh runs after its `visible_at` has passed, and running with `-refresh=false` defers the reveal until the next refresh. A late-applied saved plan will not reveal an item even if the time has passed by the time the plan is applied — its refresh already ran at plan time; a new plan/apply is required. Create, replacement, and a `triggers_reset` change delay every seeded value. Setting `delayed_for` on an existing resource hides nothing that is already visible. Changing the value recalculates every pending `visible_at` as min(old, new) on a decrease and max(old, new) on an increase; removing it reveals every pending value at that apply. Must be between 0 and 9223372036 (about 292 years) and strictly less than `expires_after` when both are set; `0` stamps the current moment so the next refresh reveals the value. Leave it null to disable the delay entirely.
 - `expires_after` (Number) How many seconds a value that has left `inputs` survives in `outputs`. While a value stays in `inputs` it never expires and its `expires_at` is null. Expiration is realized at refresh: a value is removed when a refresh runs after its `expires_at` has passed, and running with `-refresh=false` defers removal until the next refresh. A late-applied saved plan will not expire an item even if the time has passed by the time the plan is applied — its refresh already ran at plan time; a new plan/apply is required. The entry for a value that leaves `inputs` (or whose stamp is being recalculated after an `expires_after` change) shows as known after apply in that apply's plan. Changing the value recalculates every existing `expires_at` as min(old, new) on a decrease and max(old, new) on an increase. Must be between 0 and 9223372036 (about 292 years); `0` stamps a value with the current moment as it leaves `inputs`, so the next refresh removes it. Leave it null to disable expiration entirely.
 - `triggers_replacement` (String) Change this value to force a replacement (destroy and recreate), which reseeds `outputs` from `inputs`. Any change counts, including from null to a value. Leave it null for no replacement.
 - `triggers_reset` (String) Change this value to discard the accumulated set and reseed `outputs` from `inputs`, forgetting every value seen before the change. Any change counts, including from null to a value. Leave it null for no reset.
 
 ### Read-Only
 
-- `detailed_outputs` (Map of Object) A map from every value in `outputs` to its expiration attributes. The single attribute, `expires_at`, is an RFC 3339 timestamp of when the value will be removed, or null when the value cannot expire: it is in `inputs`, or `expires_after` is null. Computed; never configured. Entries being stamped by an apply show as known after apply in that apply's plan. Expiration is realized at refresh; a late-applied saved plan will not expire an item whose time passed after the plan was created — a new plan/apply is required. (see [below for nested schema](#nestedatt--detailed_outputs))
+- `accumulated` (Set of String) Every value ever accumulated, each appearing once, including values still waiting out `delayed_for`. `outputs` is this set minus the pending values; with `delayed_for` null the two are always equal. Computed; never configured. Known at plan time under the same conditions as `outputs`.
+- `detailed_outputs` (Map of Object) A map from every value in `accumulated` to its timing attributes. `expires_at` is an RFC 3339 timestamp of when the value will be removed, or null when the value cannot expire: it is in `inputs`, or `expires_after` is null. `visible_at` is an RFC 3339 timestamp of when a pending value will join `outputs`, or null when it is already visible. Computed; never configured. Entries being stamped by an apply show as known after apply in that apply's plan. Expiry and reveal are realized at refresh; a late-applied saved plan will not expire or reveal an item whose time passed after the plan was created — a new plan/apply is required. (see [below for nested schema](#nestedatt--detailed_outputs))
 - `id` (String) A stable identifier: the lowercase hex SHA-256 of the canonical JSON encoding of the resource's initial values. On create (and replacement) that is the `inputs` list; on import it is the seeded `outputs`, because a set resource seeds no meaningful `inputs`. Stable across in-place updates.
-- `outputs` (Set of String) Every value ever accumulated, each appearing once. Computed; never configured. The plan shows the value the next apply will produce, computed against the prior state. When `inputs` (including any single element), a trigger, or `expires_after` is itself unknown at plan time, `outputs` plans as unknown and the apply resolves it.
+- `outputs` (Set of String) The visible values: `accumulated` minus every value still waiting out `delayed_for`, each appearing once. Computed; never configured. The plan shows the value the next apply will produce, computed against the prior state. When `inputs` (including any single element), a trigger, `expires_after`, or `delayed_for` is itself unknown at plan time, `outputs` plans as unknown and the apply resolves it.
 
 <a id="nestedatt--detailed_outputs"></a>
 ### Nested Schema for `detailed_outputs`
@@ -52,6 +59,7 @@ output "seen_hosts_detail" {
 Read-Only:
 
 - `expires_at` (String)
+- `visible_at` (String)
 
 ## Import
 
