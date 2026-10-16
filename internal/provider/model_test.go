@@ -422,26 +422,6 @@ func TestStateGetToleratesMissingDelayAttributes(t *testing.T) {
 			if !detailedOutputs.IsNull() {
 				t.Errorf("DetailedOutputs = %v, want null", detailedOutputs)
 			}
-			// delayed_for and accumulated are not in the served schema until
-			// Tasks 3 and 4 wire them, and GetAttribute errors on a path the
-			// schema lacks. The pre-feature-state guarantee they pin is the
-			// same as the one above, so decode against a copy of the schema
-			// with those two attributes added, which is the shape Tasks 3
-			// and 4 will serve.
-			augmented := tc.schema
-			attrs := make(map[string]schema.Attribute, len(tc.schema.Attributes)+2)
-			for name, a := range tc.schema.Attributes {
-				attrs[name] = a
-			}
-			attrs["delayed_for"] = schema.Int64Attribute{Optional: true}
-			switch label {
-			case "set":
-				attrs["accumulated"] = schema.SetAttribute{ElementType: types.StringType, Computed: true}
-			case "list":
-				attrs["accumulated"] = schema.ListAttribute{ElementType: types.StringType, Computed: true}
-			}
-			augmented.Attributes = attrs
-			st = tfsdk.State{Raw: tc.raw, Schema: augmented}
 			var delayedFor types.Int64
 			if diags := st.GetAttribute(ctx, path.Root("delayed_for"), &delayedFor); diags.HasError() {
 				t.Fatalf("GetAttribute(delayed_for) on pre-delay state shape: %+v", diags)
