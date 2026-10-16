@@ -76,6 +76,7 @@ func TestAccListImport(t *testing.T) {
 				Config: config,
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectListOutputs("a", "b", "c"),
+					expectListAccumulated("a", "b", "c"),
 					expectDetailed("accumulator_list.test", map[string]knownvalue.Check{
 						"a": nullDetail(), "b": nullDetail(), "c": nullDetail(),
 					}),
@@ -125,6 +126,7 @@ func TestAccSetImport(t *testing.T) {
 				Config: config,
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs("a", "b", "d"),
+					expectSetAccumulated("a", "b", "d"),
 				},
 				ConfigPlanChecks: expectEmptyAfterRefresh(),
 			},

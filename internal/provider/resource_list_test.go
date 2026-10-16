@@ -1117,3 +1117,324 @@ func TestAccListExpiresAfterUpperBound(t *testing.T) {
 		}},
 	})
 }
+
+func expectListAccumulated(values ...string) statecheck.StateCheck {
+	return expectAccumulated("accumulator_list.test", knownvalue.ListExact(stringList(values...)))
+}
+
+func expectListPlanAccumulated(values ...string) plancheck.PlanCheck {
+	return expectPlanAccumulated("accumulator_list.test", knownvalue.ListExact(stringList(values...)))
+}
+
+// TestAccListCreateWithDelayedFor pins D1 on create and that length trims
+// accumulated, not outputs: [a, b, c] with length 2 keeps [b, c] pending.
+func TestAccListCreateWithDelayedFor(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config: listConfig(`["a", "b", "c"]`, 2, `  delayed_for = 3600`),
+			ConfigPlanChecks: resource.ConfigPlanChecks{
+				PreApply: []plancheck.PlanCheck{
+					expectListPlanOutputs(),
+					expectListPlanAccumulated("b", "c"),
+					expectPlanDetailVisibleUnknown("accumulator_list.test", "b"),
+					expectPlanDetailVisibleUnknown("accumulator_list.test", "c"),
+				},
+				PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+			},
+			ConfigStateChecks: []statecheck.StateCheck{
+				expectListOutputs(),
+				expectListAccumulated("b", "c"),
+				expectDetailed("accumulator_list.test", map[string]knownvalue.Check{
+					"b": pendingDetail(), "c": pendingDetail(),
+				}),
+			},
+		}},
+	})
+}
+
+// TestAccListOutputsKnownAtPlanTimeWithDelayedFor extends the PR #2 suite:
+// append, length change, reset, and replacement all plan outputs and
+// accumulated as known while delayed_for is set.
+func TestAccListOutputsKnownAtPlanTimeWithDelayedFor(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            listConfig(`["a"]`, 10, ""),
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a")},
+			},
+			{
+				// Append: a stays visible (D5), b enters and hides (D1).
+				Config: listConfig(`["b"]`, 10, `  delayed_for = 3600`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectListPlanOutputs("a"),
+						expectListPlanAccumulated("a", "b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectListOutputs("a"),
+					expectListAccumulated("a", "b"),
+				},
+			},
+			{
+				// Length-only change re-trims accumulated; b stays pending.
+				Config: listConfig(`["b"]`, 1, `  delayed_for = 3600`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectListPlanOutputs(),
+						expectListPlanAccumulated("b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs(), expectListAccumulated("b")},
+			},
+			{
+				// Reset: everything reseeds and enters (T4).
+				Config: listConfig(`["b"]`, 1, `  delayed_for = 3600
+  triggers_reset = "v1"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectListPlanOutputs(),
+						expectListPlanAccumulated("b"),
+						expectPlanDetailVisibleUnknown("accumulator_list.test", "b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs(), expectListAccumulated("b")},
+			},
+			{
+				// Replacement: Create reseeds and enters (T4).
+				Config: listConfig(`["b"]`, 1, `  delayed_for = 3600
+  triggers_reset = "v1"
+  triggers_replacement = "r1"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("accumulator_list.test", plancheck.ResourceActionReplace),
+						expectListPlanOutputs(),
+						expectListPlanAccumulated("b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs(), expectListAccumulated("b")},
+			},
+		},
+	})
+}
+
+// TestAccListRevealRealizedOnRefresh pins V1 with duplicates: both
+// occurrences of a reveal together at the refresh, and the plan is empty.
+func TestAccListRevealRealizedOnRefresh(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: listConfig(`["a", "a"]`, 10, `  delayed_for = 1`),
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectListOutputs(),
+					expectListAccumulated("a", "a"),
+					expectDetailed("accumulator_list.test", setDetail("a", pendingDetail())),
+				},
+			},
+			{
+				Config:    listConfig(`["a", "a"]`, 10, `  delayed_for = 1`),
+				PreConfig: sleepPastExpiry(),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply:             []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectListOutputs("a", "a"),
+					expectDetailed("accumulator_list.test", setDetail("a", nullDetail())),
+				},
+			},
+		},
+	})
+}
+
+// TestAccListRevealKeepsHistoryOrder pins the order rule of spec section 7:
+// a revealed value lands in its accumulated position, not at the end, and a
+// re-appended visible value shares the visible entry.
+func TestAccListRevealKeepsHistoryOrder(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            listConfig(`["a"]`, 10, ""),
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a")},
+			},
+			{
+				// b enters pending: accumulated [a, b], outputs [a].
+				Config: listConfig(`["b"]`, 10, `  delayed_for = 1`),
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectListOutputs("a"),
+					expectListAccumulated("a", "b"),
+				},
+			},
+			{
+				// a re-appends while visible: accumulated [a, b, a], outputs
+				// [a, a]. b is still pending only if the plan runs within 1s,
+				// so this step asserts accumulated and lets the reveal land
+				// whenever the clock says.
+				Config: listConfig(`["a"]`, 10, `  delayed_for = 1`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{expectListPlanAccumulated("a", "b", "a")},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{expectListAccumulated("a", "b", "a")},
+			},
+			{
+				Config:    listConfig(`["a"]`, 10, `  delayed_for = 1`),
+				PreConfig: sleepPastExpiry(),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectListOutputs("a", "b", "a"),
+					expectDetailed("accumulator_list.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": nullDetail(),
+					}),
+				},
+			},
+		},
+	})
+}
+
+// TestAccListDelayedForRemoved pins T2 on the list resource.
+func TestAccListDelayedForRemoved(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            listConfig(`["a", "b"]`, 10, `  delayed_for = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs()},
+			},
+			{
+				Config: listConfig(`["a", "b"]`, 10, ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectListPlanOutputs("a", "b"),
+						expectPlanDetailed("accumulator_list.test", map[string]knownvalue.Check{
+							"a": nullDetail(), "b": nullDetail(),
+						}),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a", "b")},
+			},
+		},
+	})
+}
+
+// TestAccListDelayedForZeroRevealsNextRefresh pins delayed_for = 0 on the
+// list resource.
+func TestAccListDelayedForZeroRevealsNextRefresh(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: listConfig(`["a"]`, 10, `  delayed_for = 0`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{expectListPlanOutputs()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectListOutputs(),
+					expectDetailed("accumulator_list.test", setDetail("a", pendingDetail())),
+				},
+			},
+			{
+				Config: listConfig(`["a"]`, 10, `  delayed_for = 0`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs("a")},
+			},
+		},
+	})
+}
+
+// TestAccListDelayedForMustBeShorterThanExpiresAfter pins C1 on the list
+// resource.
+func TestAccListDelayedForMustBeShorterThanExpiresAfter(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config:      listConfig(`["a"]`, 10, "  delayed_for = 10\n  expires_after = 10"),
+			ExpectError: regexp.MustCompile(`delayed_for must be shorter than expires_after`),
+		}},
+	})
+}
+
+// TestAccListPendingLeaverStamped pins T5 on the list resource.
+func TestAccListPendingLeaverStamped(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            listConfig(`["a", "b"]`, 10, "  delayed_for = 3600\n  expires_after = 7200"),
+				ConfigStateChecks: []statecheck.StateCheck{expectListOutputs()},
+			},
+			{
+				Config: listConfig(`["a"]`, 10, "  delayed_for = 3600\n  expires_after = 7200"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectListPlanOutputs(),
+						expectListPlanAccumulated("a", "b", "a"),
+						expectPlanDetailUnknown("accumulator_list.test", "b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectDetailed("accumulator_list.test", map[string]knownvalue.Check{
+						"a": pendingDetail(), "b": pendingLeaverDetail(),
+					}),
+				},
+			},
+		},
+	})
+}
+
+// TestAccListUnknownDelayedForAtPlan pins the fallback path on the list
+// resource.
+func TestAccListUnknownDelayedForAtPlan(t *testing.T) {
+	config := `
+resource "accumulator_list" "src" {
+  inputs = [uuid()]
+  length = 1
+}
+
+resource "accumulator_list" "test" {
+  inputs      = ["a"]
+  length      = 10
+  delayed_for = length(accumulator_list.src.outputs) * 3600
+}
+`
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config:             config,
+			ExpectNonEmptyPlan: true,
+			ConfigPlanChecks: resource.ConfigPlanChecks{
+				PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectUnknownValue("accumulator_list.test", tfjsonpath.New("outputs")),
+					plancheck.ExpectUnknownValue("accumulator_list.test", tfjsonpath.New("accumulated")),
+					plancheck.ExpectUnknownValue("accumulator_list.test", tfjsonpath.New("detailed_outputs")),
+				},
+			},
+			ConfigStateChecks: []statecheck.StateCheck{
+				expectListOutputs(),
+				expectListAccumulated("a"),
+			},
+		}},
+	})
+}
