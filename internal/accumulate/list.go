@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 
 // Package accumulate holds the list and set behavior of the accumulator
 // resources as pure Go. It imports no Terraform packages, so every decision it
