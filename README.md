@@ -98,4 +98,4 @@ make docs      # regenerate docs/ ; requires tofu >= 1.11
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+MPL-2.0. See [LICENSE](LICENSE).
