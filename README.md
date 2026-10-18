@@ -46,6 +46,14 @@ has passed, a late-applied saved plan expires nothing its own refresh did
 not already remove, and `-refresh=false` defers removal. See the resource
 documentation for the full clock rules.
 
+Both resources also accept an optional `delayed_for` (seconds). A newly
+supplied value is recorded in the computed `accumulated` attribute at once
+but joins `outputs` only after `delayed_for` seconds have passed, at the
+first refresh after that moment. With `delayed_for` null, `accumulated`
+and `outputs` are always equal. `delayed_for` must be strictly less than
+`expires_after` when both are set. Each `detailed_outputs` entry carries
+`visible_at` beside `expires_at`.
+
 Both resources carry `triggers_reset` (discard history and reseed from `inputs`)
 and `triggers_replacement` (force a replacement that reseeds). Both are
 importable with a JSON seed, since there is no external system to discover them

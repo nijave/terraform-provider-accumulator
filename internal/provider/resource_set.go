@@ -4,9 +4,9 @@ package provider
 
 import (
 	"context"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -18,9 +18,10 @@ import (
 )
 
 var (
-	_ resource.Resource                = (*setResource)(nil)
-	_ resource.ResourceWithImportState = (*setResource)(nil)
-	_ resource.ResourceWithModifyPlan  = (*setResource)(nil)
+	_ resource.Resource                   = (*setResource)(nil)
+	_ resource.ResourceWithImportState    = (*setResource)(nil)
+	_ resource.ResourceWithModifyPlan     = (*setResource)(nil)
+	_ resource.ResourceWithValidateConfig = (*setResource)(nil)
 )
 
 // setResource accumulates inputs across applies into a deduplicated set.
@@ -33,12 +34,35 @@ func NewSetResource() resource.Resource {
 	return &setResource{}
 }
 
+// priorAccumulated reads the store from state: accumulated, or outputs
+// when state predates the attribute (spec section 9).
+func (m setResourceModel) priorAccumulated(ctx context.Context) ([]string, diag.Diagnostics) {
+	if m.Accumulated.IsNull() {
+		return stringsFromSet(ctx, m.Outputs)
+	}
+	return stringsFromSet(ctx, m.Accumulated)
+}
+
+// ValidateConfig is spec C1 on raw configuration: delayed_for must be
+// strictly less than expires_after when both are known. Unknown values
+// skip the check here; ModifyPlan repeats it once they resolve.
+func (r *setResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config setResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(checkDelayShorterThanExpiry(config.DelayedFor, config.ExpiresAfter)...)
+}
+
 // setResourceModel is accumulator_set's state model.
 type setResourceModel struct {
 	Inputs              types.List   `tfsdk:"inputs"`
 	TriggersReset       types.String `tfsdk:"triggers_reset"`
 	TriggersReplacement types.String `tfsdk:"triggers_replacement"`
 	ExpiresAfter        types.Int64  `tfsdk:"expires_after"`
+	DelayedFor          types.Int64  `tfsdk:"delayed_for"`
+	Accumulated         types.Set    `tfsdk:"accumulated"`
 	Outputs             types.Set    `tfsdk:"outputs"`
 	DetailedOutputs     types.Map    `tfsdk:"detailed_outputs"`
 	ID                  types.String `tfsdk:"id"`
@@ -53,7 +77,10 @@ func (r *setResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 		MarkdownDescription: "Accumulates `inputs` across applies into a deduplicated `outputs` set. " +
 			"Every value ever seen is retained once, and a value is forgotten by a " +
 			"`triggers_reset` change, a replacement, or — when `expires_after` is set — " +
-			"expiry after the TTL; see `expires_after` for the clock rules. `inputs` is a " +
+			"expiry after the TTL; see `expires_after` for the clock rules. With " +
+			"`delayed_for` set, a newly supplied value lands in `accumulated` at once " +
+			"but joins `outputs` only after the delay; see `delayed_for` for the clock " +
+			"rules. `inputs` is a " +
 			"list, matching the shape users write in configuration. `outputs` is a set, so " +
 			"Terraform does not preserve or promise any ordering of its elements; only the " +
 			"membership is meaningful.",
@@ -98,25 +125,55 @@ func (r *setResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 					"value with the current moment as it leaves `inputs`, so the next refresh removes " +
 					"it. Leave it null to disable expiration entirely.",
 			},
+			"delayed_for": schema.Int64Attribute{
+				Optional:   true,
+				Validators: []validator.Int64{int64validator.Between(0, maxExpiresAfter)},
+				MarkdownDescription: "How many seconds a value waits in `accumulated` before it appears in " +
+					"`outputs`. The apply that first accumulates a value stamps its `visible_at` as now " +
+					"plus `delayed_for` and leaves it out of `outputs`; the reveal is realized at " +
+					"refresh: a value joins `outputs` when a refresh runs after its `visible_at` has " +
+					"passed, and running with `-refresh=false` defers the reveal until the next refresh. " +
+					"A late-applied saved plan will not reveal an item even if the time has passed by " +
+					"the time the plan is applied — its refresh already ran at plan time; a new " +
+					"plan/apply is required. Create, replacement, and a `triggers_reset` change delay " +
+					"every seeded value. Setting `delayed_for` on an existing resource hides nothing " +
+					"that is already visible. Changing the value recalculates every pending " +
+					"`visible_at` as min(old, new) on a decrease and max(old, new) on an increase; " +
+					"removing it reveals every pending value at that apply. Must be between 0 and " +
+					"9223372036 (about 292 years) and strictly less than `expires_after` when both are " +
+					"set; `0` stamps the current moment so the next refresh reveals the value. Leave it " +
+					"null to disable the delay entirely.",
+			},
+			"accumulated": schema.SetAttribute{
+				Computed:    true,
+				ElementType: types.StringType,
+				MarkdownDescription: "Every value ever accumulated, each appearing once, including " +
+					"values still waiting out `delayed_for`. `outputs` is this set minus the pending " +
+					"values; with `delayed_for` null the two are always equal. Computed; never " +
+					"configured. Known at plan time under the same conditions as `outputs`.",
+			},
 			"detailed_outputs": schema.MapAttribute{
 				Computed:    true,
 				ElementType: detailedObjectType,
-				MarkdownDescription: "A map from every value in `outputs` to its expiration attributes. " +
-					"The single attribute, `expires_at`, is an RFC 3339 timestamp of when the value " +
-					"will be removed, or null when the value cannot expire: it is in `inputs`, or " +
-					"`expires_after` is null. Computed; never configured. Entries being stamped by an " +
-					"apply show as known after apply in that apply's plan. Expiration is realized at " +
-					"refresh; a late-applied saved plan will not expire an item whose time passed " +
-					"after the plan was created — a new plan/apply is required.",
+				MarkdownDescription: "A map from every value in `accumulated` to its timing attributes. " +
+					"`expires_at` is an RFC 3339 timestamp of when the value will be removed, or null " +
+					"when the value cannot expire: it is in `inputs`, or `expires_after` is null. " +
+					"`visible_at` is an RFC 3339 timestamp of when a pending value will join `outputs`, " +
+					"or null when it is already visible. Computed; never configured. Entries being " +
+					"stamped by an apply show as known after apply in that apply's plan. Expiry and " +
+					"reveal are realized at refresh; a late-applied saved plan will not expire or " +
+					"reveal an item whose time passed after the plan was created — a new plan/apply is " +
+					"required.",
 			},
 			"outputs": schema.SetAttribute{
 				Computed:    true,
 				ElementType: types.StringType,
-				MarkdownDescription: "Every value ever accumulated, each appearing once. Computed; " +
+				MarkdownDescription: "The visible values: `accumulated` minus every value still waiting " +
+					"out `delayed_for`, each appearing once. Computed; " +
 					"never configured. The plan shows the value the next apply will produce, " +
 					"computed against the prior state. When `inputs` (including any single " +
-					"element), a trigger, or `expires_after` is itself unknown at plan time, " +
-					"`outputs` plans as unknown and the apply resolves it.",
+					"element), a trigger, `expires_after`, or `delayed_for` is itself unknown " +
+					"at plan time, `outputs` plans as unknown and the apply resolves it.",
 			},
 			"id": schema.StringAttribute{
 				Computed: true,
@@ -132,16 +189,16 @@ func (r *setResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 	}
 }
 
-// Create seeds outputs from the planned inputs. It also runs after a
+// Create seeds accumulated from the planned inputs. It also runs after a
 // replacement, which is what makes triggers_replacement reseed.
 //
-// Known path: ModifyPlan already computed outputs, detailed_outputs, and
-// the id without reading the clock (spec section 6); realizing the plan
-// verbatim is what keeps the applied value identical to the planned one.
-// Fallback path (unknown inputs at plan time): create is the reseed case,
-// every value comes from inputs, so ApplyExpiration stamps nothing and the
-// clock never participates; it is still run so both paths shape the result
-// the same way.
+// Known path: ModifyPlan already computed accumulated, outputs,
+// detailed_outputs, and the id without reading the clock (spec section 6);
+// membership is realized verbatim and only the fresh visible_at entries
+// are resolved with the apply clock, which is what keeps the applied value
+// identical to the planned one. Fallback path (unknown branch inputs at
+// plan time): create is the reseed case, every value comes from inputs,
+// and both stamps come from the apply clock through applyFallback.
 func (r *setResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan setResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -155,23 +212,41 @@ func (r *setResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
-	if !plan.Outputs.IsUnknown() && !plan.DetailedOutputs.IsUnknown() {
+	// Create is the reseed case: no prior store, no prior stamps, so every
+	// value enters (spec T4) and the only clock use is stamping visible_at.
+	args := stampArgs{
+		PlanInputs:     inputs,
+		PlannedExpires: int64Ptr(plan.ExpiresAfter),
+		PlannedDelay:   int64Ptr(plan.DelayedFor),
+	}
+
+	if !plan.Outputs.IsUnknown() && !plan.Accumulated.IsUnknown() && !plan.DetailedOutputs.IsUnknown() {
+		// Known path: realize membership verbatim and resolve the fresh
+		// visible_at entries with the apply clock.
+		accumulated, d := stringsFromSet(ctx, plan.Accumulated)
+		resp.Diagnostics.Append(d...)
+		detailed, d := applyStamps(ctx, accumulated, args, clockNow())
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		plan.DetailedOutputs = detailed
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
 
 	merged := accumulate.NextSetOutputs(true, inputs, nil)
-	survivors, stamps := accumulate.ApplyExpiration(merged, inputs, nil, nil,
-		int64Ptr(plan.ExpiresAfter), clockNow())
-
-	out, d := setFromStrings(ctx, survivors)
+	accumulated, outputs, detailed, d := applyFallback(ctx, merged, args, clockNow())
 	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, survivors, stamps)
+	acc, d := setFromStrings(ctx, accumulated)
+	resp.Diagnostics.Append(d...)
+	out, d := setFromStrings(ctx, outputs)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	plan.Accumulated = acc
 	plan.Outputs = out
 	plan.DetailedOutputs = detailed
 	plan.ID = types.StringValue(accumulate.HashID(inputs))
@@ -204,9 +279,6 @@ func (r *setResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	creating := req.State.Raw.IsNull()
 
 	var state setResourceModel
-	var stateOutputs []string
-	var priorStamps map[string]time.Time
-	var priorExpiresAfter *int64
 	if !creating {
 		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 		if resp.Diagnostics.HasError() {
@@ -221,23 +293,37 @@ func (r *setResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	// place until Create or Update resolves the value. Unknown elements inside
 	// inputs count too: Terraform marks them individually.
 	if listContainsUnknown(plan.Inputs) || plan.TriggersReset.IsUnknown() ||
-		plan.TriggersReplacement.IsUnknown() || plan.ExpiresAfter.IsUnknown() {
+		plan.TriggersReplacement.IsUnknown() || plan.ExpiresAfter.IsUnknown() ||
+		plan.DelayedFor.IsUnknown() {
 		return
 	}
 	if !creating && (state.Inputs.IsUnknown() || state.Outputs.IsUnknown() ||
 		state.TriggersReset.IsUnknown() || state.TriggersReplacement.IsUnknown() ||
-		state.ExpiresAfter.IsUnknown() || state.DetailedOutputs.IsUnknown()) {
+		state.ExpiresAfter.IsUnknown() || state.DetailedOutputs.IsUnknown() ||
+		state.DelayedFor.IsUnknown() || state.Accumulated.IsUnknown()) {
+		return
+	}
+	resp.Diagnostics.Append(checkDelayShorterThanExpiry(plan.DelayedFor, plan.ExpiresAfter)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	planInputs, d := stringsFromList(ctx, plan.Inputs)
 	resp.Diagnostics.Append(d...)
+	var priorAccumulated []string
+	var prior stamps
+	args := stampArgs{
+		PlanInputs:     planInputs,
+		PlannedExpires: int64Ptr(plan.ExpiresAfter),
+		PlannedDelay:   int64Ptr(plan.DelayedFor),
+	}
 	if !creating {
-		stateOutputs, d = stringsFromSet(ctx, state.Outputs)
+		priorAccumulated, d = state.priorAccumulated(ctx)
 		resp.Diagnostics.Append(d...)
-		priorStamps, d = stampsFromMap(ctx, state.DetailedOutputs)
+		prior, d = stampsFromMap(ctx, state.DetailedOutputs)
 		resp.Diagnostics.Append(d...)
-		priorExpiresAfter = int64Ptr(state.ExpiresAfter)
+		args.PriorExpires = int64Ptr(state.ExpiresAfter)
+		args.PriorDelay = int64Ptr(state.DelayedFor)
 	}
 	if resp.Diagnostics.HasError() {
 		return
@@ -252,25 +338,28 @@ func (r *setResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	replacing := !creating && !plan.TriggersReplacement.Equal(state.TriggersReplacement)
 	reseed := creating || replacing || !plan.TriggersReset.Equal(state.TriggersReset)
 
-	merged := accumulate.NextSetOutputs(reseed, planInputs, stateOutputs)
+	merged := accumulate.NextSetOutputs(reseed, planInputs, priorAccumulated)
 
-	// No clock here (spec section 6): refresh already culled expired
-	// values, so membership is a pure function of state and configuration,
-	// and OpenTofu's apply-time re-derivation of this plan reproduces it
-	// exactly. ClassifyStamps decides which detailed_outputs entries are
-	// known (prior stamps under an unchanged expires_after) and which stay
-	// unknown until the apply stamps them (S1, S3, S4, S5).
-	keep, fresh := accumulate.ClassifyStamps(merged, planInputs, priorStamps,
-		priorExpiresAfter, int64Ptr(plan.ExpiresAfter))
+	// A reseed discards history: no prior store and no prior stamps, so
+	// every value enters with a full delay window (spec T4).
+	if !reseed {
+		args.PriorAccumulated = priorAccumulated
+		args.Prior = prior
+	}
 
-	out, d := setFromStrings(ctx, merged)
+	// No clock here (spec section 6): refresh already culled and revealed,
+	// so membership is a pure function of state and configuration.
+	outputs, detailed, d := planStamps(ctx, merged, args)
 	resp.Diagnostics.Append(d...)
-	detailed, d := classifiedMap(ctx, merged, keep, fresh)
+	acc, d := setFromStrings(ctx, merged)
+	resp.Diagnostics.Append(d...)
+	out, d := setFromStrings(ctx, outputs)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	plan.Accumulated = acc
 	plan.Outputs = out
 	plan.DetailedOutputs = detailed
 	if creating || replacing {
@@ -282,14 +371,11 @@ func (r *setResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
-// Read culls expired values: the refresh-time half of the expiration
-// design (spec section 6), and the per-value analogue of time_rotating's
-// Read removing the resource once its rotation deadline passes. Read
-// cannot see configuration, so the cull runs on stored stamps alone;
-// values in inputs are safe because they never carry a stamp (R2). When
-// nothing expired, the method returns without touching the response,
-// which keeps the old no-op behavior for everything else: refresh only ever
-// removes expired values, and only when at least one is expired.
+// Read culls expired values and reveals due ones: the refresh-time half of
+// both designs. Read cannot see configuration, so both decisions run on
+// stored stamps alone. It writes state only when a value was dropped or
+// revealed, or when state predates accumulated and needs it filled from
+// outputs (spec section 9), which keeps the plan after a refresh empty.
 func (r *setResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state setResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -297,27 +383,32 @@ func (r *setResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		return
 	}
 
-	values, d := stringsFromSet(ctx, state.Outputs)
+	values, d := state.priorAccumulated(ctx)
 	resp.Diagnostics.Append(d...)
-	stamps, d := stampsFromMap(ctx, state.DetailedOutputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	survivors, kept := accumulate.FilterExpired(values, stamps, clockNow())
-	if len(survivors) == len(values) {
-		return
-	}
-
-	out, d := setFromStrings(ctx, survivors)
-	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, survivors, kept)
+	prior, d := stampsFromMap(ctx, state.DetailedOutputs)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	now := clockNow()
+	survivors, expires := accumulate.FilterExpired(values, prior.Expires, now)
+	visible, pending := accumulate.FilterPending(survivors, prior.Visible, now)
+	if !state.Accumulated.IsNull() && len(survivors) == len(values) && len(pending) == len(prior.Visible) {
+		return
+	}
+
+	acc, d := setFromStrings(ctx, survivors)
+	resp.Diagnostics.Append(d...)
+	out, d := setFromStrings(ctx, visible)
+	resp.Diagnostics.Append(d...)
+	detailed, d := mapFromStamps(ctx, survivors, stamps{Expires: expires, Visible: pending})
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	state.Accumulated = acc
 	state.Outputs = out
 	state.DetailedOutputs = detailed
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -329,7 +420,7 @@ func (r *setResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 // fresh entries (unknown in the plan) with the apply clock (spec section 6).
 // The fallback path runs only when the plan is unknown (unknown branch
 // inputs at plan time), where the plan promised unknown and Update is free
-// to decide with the apply clock through ApplyExpiration. No inputs
+// to decide with the apply clock through applyFallback. No inputs
 // comparison is needed: union is idempotent.
 func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state setResourceModel
@@ -339,31 +430,36 @@ func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		return
 	}
 
-	if !plan.Outputs.IsUnknown() && !plan.DetailedOutputs.IsUnknown() {
-		// The plan's membership and keeper stamps reproduce exactly through
-		// the same pure functions ModifyPlan used; only the fresh entries
-		// (unknown in the plan) are resolved here with the apply clock
-		// (spec section 6).
-		planInputs, d := stringsFromList(ctx, plan.Inputs)
+	planInputs, d := stringsFromList(ctx, plan.Inputs)
+	resp.Diagnostics.Append(d...)
+	priorAccumulated, d := state.priorAccumulated(ctx)
+	resp.Diagnostics.Append(d...)
+	prior, d := stampsFromMap(ctx, state.DetailedOutputs)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	reseed := !plan.TriggersReset.Equal(state.TriggersReset)
+	args := stampArgs{
+		PlanInputs:     planInputs,
+		PriorExpires:   int64Ptr(state.ExpiresAfter),
+		PlannedExpires: int64Ptr(plan.ExpiresAfter),
+		PriorDelay:     int64Ptr(state.DelayedFor),
+		PlannedDelay:   int64Ptr(plan.DelayedFor),
+	}
+	if !reseed {
+		args.PriorAccumulated = priorAccumulated
+		args.Prior = prior
+	}
+	now := clockNow()
+
+	if !plan.Outputs.IsUnknown() && !plan.Accumulated.IsUnknown() && !plan.DetailedOutputs.IsUnknown() {
+		// Known path: membership and keeper stamps reproduce exactly through
+		// the pure functions ModifyPlan used; only fresh entries resolve here.
+		accumulated, d := stringsFromSet(ctx, plan.Accumulated)
 		resp.Diagnostics.Append(d...)
-		planOutputs, d := stringsFromSet(ctx, plan.Outputs)
-		resp.Diagnostics.Append(d...)
-		priorStamps, d := stampsFromMap(ctx, state.DetailedOutputs)
-		resp.Diagnostics.Append(d...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		priorE, plannedE := int64Ptr(state.ExpiresAfter), int64Ptr(plan.ExpiresAfter)
-		keep, fresh := accumulate.ClassifyStamps(planOutputs, planInputs, priorStamps, priorE, plannedE)
-		stamps := make(map[string]time.Time, len(keep)+len(fresh))
-		for v, stamp := range keep {
-			stamps[v] = stamp
-		}
-		now := clockNow()
-		for v := range fresh {
-			stamps[v] = accumulate.FreshStamp(priorStamps, priorE, plannedE, now, v)
-		}
-		detailed, d := mapFromStamps(ctx, planOutputs, stamps)
+		detailed, d := applyStamps(ctx, accumulated, args, now)
 		resp.Diagnostics.Append(d...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -374,29 +470,18 @@ func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		return
 	}
 
-	planInputs, d := stringsFromList(ctx, plan.Inputs)
+	merged := accumulate.NextSetOutputs(reseed, planInputs, priorAccumulated)
+	accumulated, outputs, detailed, d := applyFallback(ctx, merged, args, now)
 	resp.Diagnostics.Append(d...)
-	stateOutputs, d := stringsFromSet(ctx, state.Outputs)
+	acc, d := setFromStrings(ctx, accumulated)
 	resp.Diagnostics.Append(d...)
-	priorStamps, d := stampsFromMap(ctx, state.DetailedOutputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	reseed := !plan.TriggersReset.Equal(state.TriggersReset)
-	merged := accumulate.NextSetOutputs(reseed, planInputs, stateOutputs)
-	survivors, stamps := accumulate.ApplyExpiration(merged, planInputs, priorStamps,
-		int64Ptr(state.ExpiresAfter), int64Ptr(plan.ExpiresAfter), clockNow())
-
-	out, d := setFromStrings(ctx, survivors)
-	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, survivors, stamps)
+	out, d := setFromStrings(ctx, outputs)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	plan.Accumulated = acc
 	plan.Outputs = out
 	plan.DetailedOutputs = detailed
 	plan.ID = state.ID
@@ -434,7 +519,7 @@ func (r *setResource) ImportState(ctx context.Context, req resource.ImportStateR
 		return
 	}
 
-	detailed, d := mapFromStamps(ctx, merged, nil)
+	detailed, d := mapFromStamps(ctx, merged, stamps{})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -445,6 +530,8 @@ func (r *setResource) ImportState(ctx context.Context, req resource.ImportStateR
 		TriggersReset:       types.StringNull(),
 		TriggersReplacement: types.StringNull(),
 		ExpiresAfter:        types.Int64Null(),
+		DelayedFor:          types.Int64Null(),
+		Accumulated:         outputs,
 		Outputs:             outputs,
 		DetailedOutputs:     detailed,
 		ID:                  types.StringValue(accumulate.HashID(merged)),

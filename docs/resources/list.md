@@ -16,11 +16,16 @@ Accumulates `inputs` across applies, keeping the most recent `length` entries in
 resource "accumulator_list" "recent_deploys" {
   inputs        = [var.deploy_sha]
   length        = 5
+  delayed_for   = 300
   expires_after = 86400
 }
 
 output "recent_deploys" {
   value = accumulator_list.recent_deploys.outputs
+}
+
+output "recent_deploys_all" {
+  value = accumulator_list.recent_deploys.accumulated
 }
 
 output "recent_deploys_detail" {
@@ -38,15 +43,17 @@ output "recent_deploys_detail" {
 
 ### Optional
 
+- `delayed_for` (Number) How many seconds a value waits in `accumulated` before it appears in `outputs`. The apply that first accumulates a value stamps its `visible_at` as now plus `delayed_for` and leaves it out of `outputs`; the reveal is realized at refresh: a value joins `outputs` when a refresh runs after its `visible_at` has passed, and running with `-refresh=false` defers the reveal until the next refresh. A late-applied saved plan will not reveal an item even if the time has passed by the time the plan is applied — its refresh already ran at plan time; a new plan/apply is required. Create, replacement, and a `triggers_reset` change delay every seeded value. Setting `delayed_for` on an existing resource hides nothing that is already visible. Changing the value recalculates every pending `visible_at` as min(old, new) on a decrease and max(old, new) on an increase; removing it reveals every pending value at that apply. Must be between 0 and 9223372036 (about 292 years) and strictly less than `expires_after` when both are set; `0` stamps the current moment so the next refresh reveals the value. Leave it null to disable the delay entirely.
 - `expires_after` (Number) How many seconds a value that has left `inputs` survives in `outputs`. While a value stays in `inputs` it never expires and its `expires_at` is null. Expiration is realized at refresh: a value is removed when a refresh runs after its `expires_at` has passed, and running with `-refresh=false` defers removal until the next refresh. A late-applied saved plan will not expire an item even if the time has passed by the time the plan is applied — its refresh already ran at plan time; a new plan/apply is required. The entry for a value that leaves `inputs` (or whose stamp is being recalculated after an `expires_after` change) shows as known after apply in that apply's plan. Changing the value recalculates every existing `expires_at` as min(old, new) on a decrease and max(old, new) on an increase. Must be between 0 and 9223372036 (about 292 years); `0` stamps a value with the current moment as it leaves `inputs`, so the next refresh removes it. Leave it null to disable expiration entirely.
 - `triggers_replacement` (String) Change this value to force a replacement (destroy and recreate), which reseeds `outputs` from `inputs`. Any change counts, including from null to a value. Leave it null for no replacement.
 - `triggers_reset` (String) Change this value to discard the accumulated history and reseed `outputs` from `inputs`. Any change counts, including from null to a value. Leave it null for no reset.
 
 ### Read-Only
 
-- `detailed_outputs` (Map of Object) A map from every value in `outputs` to its expiration attributes. The single attribute, `expires_at`, is an RFC 3339 timestamp of when the value will be removed, or null when the value cannot expire: it is in `inputs`, or `expires_after` is null. Computed; never configured. Entries being stamped by an apply show as known after apply in that apply's plan. Expiration is realized at refresh; a late-applied saved plan will not expire an item whose time passed after the plan was created — a new plan/apply is required. (see [below for nested schema](#nestedatt--detailed_outputs))
+- `accumulated` (List of String) The accumulated history, oldest first, trimmed to at most `length` elements, including values still waiting out `delayed_for`. `outputs` is this list minus the pending values, in the same order; with `delayed_for` null the two are always equal. Computed; never configured. Known at plan time under the same conditions as `outputs`.
+- `detailed_outputs` (Map of Object) A map from every value in `accumulated` to its timing attributes. `expires_at` is an RFC 3339 timestamp of when the value will be removed, or null when the value cannot expire: it is in `inputs`, or `expires_after` is null. `visible_at` is an RFC 3339 timestamp of when a pending value will join `outputs`, or null when it is already visible. Computed; never configured. Entries being stamped by an apply show as known after apply in that apply's plan. Expiry and reveal are realized at refresh; a late-applied saved plan will not expire or reveal an item whose time passed after the plan was created — a new plan/apply is required. (see [below for nested schema](#nestedatt--detailed_outputs))
 - `id` (String) A stable identifier: the lowercase hex SHA-256 of the canonical JSON encoding of the `inputs` present when the resource was created. Stable across in-place updates; recomputed on replacement.
-- `outputs` (List of String) The accumulated history, oldest first, trimmed to at most `length` elements. Computed; never configured. The plan shows the value the next apply will produce, computed against the prior state. When `inputs` (including any single element), `length`, a trigger, or `expires_after` is itself unknown at plan time, `outputs` plans as unknown and the apply resolves it.
+- `outputs` (List of String) The visible history, oldest first: `accumulated` minus every value still waiting out `delayed_for`, so it may hold fewer than `length` elements while values are pending. Computed; never configured. The plan shows the value the next apply will produce, computed against the prior state. When `inputs` (including any single element), `length`, a trigger, `expires_after`, or `delayed_for` is itself unknown at plan time, `outputs` plans as unknown and the apply resolves it.
 
 <a id="nestedatt--detailed_outputs"></a>
 ### Nested Schema for `detailed_outputs`
@@ -54,6 +61,7 @@ output "recent_deploys_detail" {
 Read-Only:
 
 - `expires_at` (String)
+- `visible_at` (String)
 
 ## Import
 
