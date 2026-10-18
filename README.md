@@ -44,13 +44,14 @@ output "recent_deploys" {
 
 ## Expiration
 
-All three resources accept an optional `expires_after` (seconds). A value (or map key) that
-leaves `inputs` is removed once `expires_after` seconds have passed; a value
-that stays in `inputs` never expires. The computed `detailed_outputs` map
-reports each value's `expires_at` (RFC 3339) or null. Expiration is lazy and
-realized at refresh: a value is removed when a refresh runs after its time has
-passed, a late-applied saved plan expires nothing its own refresh did not
-already remove, and `-refresh=false` defers removal. See the resource
+All three resources accept an optional `expires_after` (seconds). A value (or
+map key) that leaves `inputs` is removed once `expires_after` seconds have
+passed; a value that stays in `inputs` never expires. The computed
+`detailed_outputs` map reports each entry's `expires_at` (RFC 3339) or null.
+Expiration is lazy and realized at refresh: a value is removed when a refresh
+runs after its time has passed, a late-applied saved plan expires nothing its
+own refresh did not already remove, and `-refresh=false` defers removal. See
+the resource
 documentation for the full clock rules.
 
 All three resources also accept an optional `delayed_for` (seconds). A newly
@@ -61,10 +62,10 @@ and `outputs` are always equal. `delayed_for` must be strictly less than
 `expires_after` when both are set. Each `detailed_outputs` entry carries
 `visible_at` beside `expires_at`.
 
-All three resources carry `triggers_reset` (discard history and reseed from `inputs`)
-and `triggers_replacement` (force a replacement that reseeds). Both are
-importable with a JSON seed, since there is no external system to discover them
-from:
+All three resources carry `triggers_reset` (discard history and reseed from
+`inputs`) and `triggers_replacement` (force a replacement that reseeds). All
+three are importable with a JSON seed, since there is no external system to
+discover them from:
 
 ```sh
 tofu import accumulator_list.recent_deploys '{"inputs":["a","b"],"outputs":["a","b","c"]}'
@@ -79,9 +80,9 @@ configuration and the apply re-trims the seeded `outputs`. For
 import supplies the configured `inputs` and the apply unions them into the
 seeded `outputs`.
 
-For `accumulator_map`, the seed values are JSON objects of strings; `inputs`
-is seeded as an empty map and the first apply merges the configured `inputs`
-into the seeded `outputs`.
+For `accumulator_map`, the `outputs` value in the import ID is a JSON object
+of strings; `inputs` is seeded as an empty map and the first apply merges the
+configured `inputs` into the seeded `outputs`.
 
 ## History lives in state
 
@@ -92,8 +93,8 @@ accumulate secrets.
 
 ## Documentation
 
-The [provider documentation](docs/index.md) lists all three resources. The provider
-has no configuration block.
+The [provider documentation](docs/index.md) lists all three resources. The
+provider has no configuration block.
 
 ## Requirements
 
