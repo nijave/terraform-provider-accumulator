@@ -79,3 +79,73 @@ func stringArray(raw json.RawMessage) ([]string, error) {
 	}
 	return out, nil
 }
+
+// MapImportSeed is the parsed form of an accumulator_map import ID. A
+// missing key is an empty map, never nil, so the caller always writes a
+// concrete map to state.
+type MapImportSeed struct {
+	Inputs  map[string]string
+	Outputs map[string]string
+}
+
+// ParseMapImport parses an accumulator_map import ID, which is a JSON
+// object whose values are objects of strings:
+//
+//	{"inputs":{"k":"v"},"outputs":{"k":"v","k2":"v2"}}
+//
+// The same contract as ParseImport: only "inputs" and "outputs" are
+// recognized, each must be a JSON object whose values are strings, and
+// errors name the expected shape and quote the offending key only.
+func ParseMapImport(id string) (MapImportSeed, error) {
+	seed := MapImportSeed{Inputs: map[string]string{}, Outputs: map[string]string{}}
+
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(id), &object); err != nil || object == nil {
+		return MapImportSeed{}, fmt.Errorf(
+			"import ID must be a JSON object with optional \"inputs\" and \"outputs\" objects of strings, " +
+				"for example {\"inputs\":{\"k\":\"v\"},\"outputs\":{\"k\":\"v\"}}")
+	}
+
+	keys := make([]string, 0, len(object))
+	for k := range object {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		if k != "inputs" && k != "outputs" {
+			return MapImportSeed{}, fmt.Errorf(
+				"import ID key %q is not recognized; the only recognized keys are \"inputs\" and \"outputs\"", k)
+		}
+		values, err := stringObject(object[k])
+		if err != nil {
+			return MapImportSeed{}, fmt.Errorf("import ID key %q %v", k, err)
+		}
+		if k == "inputs" {
+			seed.Inputs = values
+		} else {
+			seed.Outputs = values
+		}
+	}
+	return seed, nil
+}
+
+// stringObject decodes a JSON value that must be an object of strings. A
+// JSON null decodes into a nil map with no error, so it is rejected
+// explicitly, as are arrays, numbers, nested objects, and booleans inside
+// the object.
+func stringObject(raw json.RawMessage) (map[string]string, error) {
+	var items map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil || items == nil {
+		return nil, fmt.Errorf("must be an object of strings")
+	}
+	out := make(map[string]string, len(items))
+	for k, item := range items {
+		var s string
+		if err := json.Unmarshal(item, &s); err != nil {
+			return nil, fmt.Errorf("must be an object of strings")
+		}
+		out[k] = s
+	}
+	return out, nil
+}

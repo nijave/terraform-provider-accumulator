@@ -109,3 +109,92 @@ func TestParseImportErrorDoesNotEchoPayload(t *testing.T) {
 		}
 	}
 }
+
+func TestParseMapImport(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		id   string
+		want MapImportSeed
+	}{
+		"both keys": {
+			`{"inputs":{"a":"1"},"outputs":{"a":"1","b":"2"}}`,
+			MapImportSeed{Inputs: map[string]string{"a": "1"}, Outputs: map[string]string{"a": "1", "b": "2"}},
+		},
+		"outputs only": {
+			`{"outputs":{"a":"1"}}`,
+			MapImportSeed{Inputs: map[string]string{}, Outputs: map[string]string{"a": "1"}},
+		},
+		"inputs only": {
+			`{"inputs":{"a":"1"}}`,
+			MapImportSeed{Inputs: map[string]string{"a": "1"}, Outputs: map[string]string{}},
+		},
+		"empty object": {
+			`{}`,
+			MapImportSeed{Inputs: map[string]string{}, Outputs: map[string]string{}},
+		},
+		"empty objects stay empty": {
+			`{"inputs":{},"outputs":{}}`,
+			MapImportSeed{Inputs: map[string]string{}, Outputs: map[string]string{}},
+		},
+		"empty string value": {
+			`{"outputs":{"a":""}}`,
+			MapImportSeed{Inputs: map[string]string{}, Outputs: map[string]string{"a": ""}},
+		},
+	}
+
+	for label, tc := range cases {
+		tc := tc
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			got, err := ParseMapImport(tc.id)
+			if err != nil {
+				t.Fatalf("ParseMapImport(%q): %v", tc.id, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ParseMapImport(%q) = %+v, want %+v", tc.id, got, tc.want)
+			}
+			if got.Inputs == nil || got.Outputs == nil {
+				t.Fatal("ParseMapImport returned a nil map; a missing key must mean empty, not null")
+			}
+		})
+	}
+}
+
+func TestParseMapImportRejects(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		id          string
+		wantContain string
+		wantAbsent  string
+	}{
+		"not json":           {`not-json`, "must be a JSON object", ""},
+		"json array":         {`[]`, "must be a JSON object", ""},
+		"json null":          {`null`, "must be a JSON object", ""},
+		"unknown key":        {`{"outupts":{"a":"1"}}`, `"outupts" is not recognized`, ""},
+		"array value":        {`{"outputs":["a"]}`, `"outputs" must be an object of strings`, ""},
+		"null value":         {`{"outputs":null}`, `"outputs" must be an object of strings`, ""},
+		"number entry":       {`{"outputs":{"a":1}}`, `"outputs" must be an object of strings`, "1"},
+		"nested object":      {`{"outputs":{"a":{"b":"c"}}}`, `"outputs" must be an object of strings`, `"c"`},
+		"string instead":     {`{"inputs":"a"}`, `"inputs" must be an object of strings`, ""},
+		"first bad key wins": {`{"zzz":{},"aaa":{}}`, `"aaa" is not recognized`, "zzz"},
+	}
+
+	for label, tc := range cases {
+		tc := tc
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			_, err := ParseMapImport(tc.id)
+			if err == nil {
+				t.Fatalf("ParseMapImport(%q) accepted a malformed ID", tc.id)
+			}
+			if !strings.Contains(err.Error(), tc.wantContain) {
+				t.Fatalf("ParseMapImport(%q) error = %q, want it to contain %q", tc.id, err, tc.wantContain)
+			}
+			if tc.wantAbsent != "" && strings.Contains(err.Error(), tc.wantAbsent) {
+				t.Fatalf("ParseMapImport(%q) error = %q leaks payload %q; errors quote only the key", tc.id, err, tc.wantAbsent)
+			}
+		})
+	}
+}
