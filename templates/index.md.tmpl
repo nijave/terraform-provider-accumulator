@@ -1,12 +1,12 @@
 # terraform-provider-accumulator
 
 Resources that accumulate a value over successive applies — a list bounded by
-a fixed history length, and a set — with an optional per-value TTL
-(`expires_after`) for values that stop being supplied, and an optional
-warm-up window (`delayed_for`) before a new value appears in `outputs`. The accumulated
-history lives in Terraform/OpenTofu state, so there is no endpoint, no
-credential, and no external store to stand up: the provider is two resources
-and a small amount of pure list and set logic.
+a fixed history length, a set, and a map keyed by input key — with an optional
+per-value TTL (`expires_after`) for values that stop being supplied, and an
+optional warm-up window (`delayed_for`) before a new value appears in
+`outputs`. The accumulated history lives in Terraform/OpenTofu state, so there
+is no endpoint, no credential, and no external store to stand up: the provider
+is three resources and a small amount of pure list, set, and map logic.
 
 ## Example
 
@@ -23,6 +23,25 @@ output "recent_deploys" {
 
 Each apply that changes `inputs` appends the whole new `inputs` list; the list
 keeps only the most recent `length` entries.
+
+## Resources
+
+- **`accumulator_list`** keeps the most recent `length` inputs. Each apply whose
+  `inputs` differs from the previous apply appends the whole new list.
+- **`accumulator_set`** remembers every value it has seen, each once, until a
+  `triggers_reset` change, a replacement, or expiry forgets it.
+- **`accumulator_map`** remembers every key it has seen with the most recent
+  value supplied for it. Re-supplying a key overwrites its value in place.
+
+## Import
+
+All three resources are importable with a JSON seed:
+
+```sh
+tofu import accumulator_list.recent_deploys '{"inputs":["a","b"],"outputs":["a","b","c"]}'
+tofu import accumulator_set.seen_hosts '{"outputs":["a","b"]}'
+tofu import accumulator_map.last_digest '{"outputs":{"api":"sha256:ab","web":"sha256:cd"}}'
+```
 
 ## Requirements
 
