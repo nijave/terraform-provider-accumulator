@@ -37,9 +37,10 @@ func NextMapOutputs(reseed bool, planInputs, stateAccumulated map[string]string)
 }
 
 // SortedKeys returns the keys of m in ascending order. A nil or empty m
-// yields an empty (non-nil) slice. Every call from the map resource into the
-// stamp functions passes this, so plan and apply classify the same keys in
-// the same order and detailed_outputs is deterministic.
+// yields an empty (non-nil) slice. The stamp functions give the same result
+// for any key order, so correctness does not depend on this; the map
+// resource passes sorted keys so that their output and any debugging trace
+// are stable from run to run.
 func SortedKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

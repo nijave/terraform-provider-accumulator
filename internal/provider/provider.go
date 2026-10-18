@@ -57,6 +57,7 @@ func (p *accumulatorProvider) Resources(_ context.Context) []func() resource.Res
 	return []func() resource.Resource{
 		NewListResource,
 		NewSetResource,
+		NewMapResource,
 	}
 }
 
