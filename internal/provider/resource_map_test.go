@@ -336,3 +336,410 @@ resource "accumulator_map" "test" {
 		}},
 	})
 }
+
+// TestAccMapLeaverStampedOnInputsChange pins S1 for keys: b leaves inputs
+// and is stamped at apply; a stays null and keeps its value. b's entry is
+// fresh, so it is unknown in the plan.
+func TestAccMapLeaverStampedOnInputsChange(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            mapConfig(`{ a = "1", b = "1" }`, `  expires_after = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"a": "1", "b": "1"})},
+				ConfigPlanChecks:  expectEmptyAfterRefresh(),
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, `  expires_after = 3600`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectMapPlanOutputs(map[string]string{"a": "1", "b": "1"}),
+						expectPlanDetailUnknown("accumulator_map.test", "b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1", "b": "1"}),
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": stampedDetail(),
+					}),
+				},
+			},
+		},
+	})
+}
+
+// TestAccMapValueChangeDoesNotStamp pins Review Focus 4: with expires_after
+// set, a value-only change plans fully known with no unknown stamp, because
+// no key enters or leaves.
+func TestAccMapValueChangeDoesNotStamp(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            mapConfig(`{ a = "1" }`, `  expires_after = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"a": "1"})},
+				ConfigPlanChecks:  expectEmptyAfterRefresh(),
+			},
+			{
+				Config: mapConfig(`{ a = "2" }`, `  expires_after = 3600`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectMapPlanOutputs(map[string]string{"a": "2"}),
+						expectPlanDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "2"}),
+					expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+				},
+			},
+		},
+	})
+}
+
+// TestAccMapExpiryRealizedOnRefresh pins X1: with no configuration change,
+// the step's refresh culls b before planning, so the plan is empty and
+// state no longer contains it.
+func TestAccMapExpiryRealizedOnRefresh(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            mapConfig(`{ a = "1", b = "1" }`, `  expires_after = 1`),
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"a": "1", "b": "1"})},
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, `  expires_after = 1`),
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1", "b": "1"}),
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": stampedDetail(),
+					}),
+				},
+			},
+			{
+				Config:    mapConfig(`{ a = "1" }`, `  expires_after = 1`),
+				PreConfig: sleepPastExpiry(),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply:             []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1"}),
+					expectMapAccumulated(map[string]string{"a": "1"}),
+					expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+				},
+			},
+		},
+	})
+}
+
+// TestAccMapReSupplyRescues pins that a stamped leaver re-supplied with a
+// new value loses its expires_at and takes the new value.
+func TestAccMapReSupplyRescues(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            mapConfig(`{ a = "1", b = "1" }`, `  expires_after = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"a": "1", "b": "1"})},
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, `  expires_after = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": stampedDetail(),
+					}),
+				},
+			},
+			{
+				Config: mapConfig(`{ a = "1", b = "9" }`, `  expires_after = 3600`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectMapPlanOutputs(map[string]string{"a": "1", "b": "9"}),
+						expectPlanDetailed("accumulator_map.test", map[string]knownvalue.Check{
+							"a": nullDetail(), "b": nullDetail(),
+						}),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1", "b": "9"}),
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": nullDetail(),
+					}),
+				},
+			},
+		},
+	})
+}
+
+// TestAccMapResetClearsStamps pins T4 for expiry: a reset forgets stamped
+// leavers along with everything else.
+func TestAccMapResetClearsStamps(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            mapConfig(`{ a = "1", b = "1" }`, "  expires_after = 3600\n  triggers_reset = \"v1\""),
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"a": "1", "b": "1"})},
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, "  expires_after = 3600\n  triggers_reset = \"v1\""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": stampedDetail(),
+					}),
+				},
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, "  expires_after = 3600\n  triggers_reset = \"v2\""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectMapPlanOutputs(map[string]string{"a": "1"}),
+						expectPlanDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1"}),
+					expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+				},
+			},
+		},
+	})
+}
+
+// TestAccMapExpiresAfterSetOnExistingResource pins S5: history that
+// accumulated with no expires_after gets a full window when it is enabled.
+func TestAccMapExpiresAfterSetOnExistingResource(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: mapConfig(`{ a = "1", b = "1" }`, ""),
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1", "b": "1"}),
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": nullDetail(),
+					}),
+				},
+				ConfigPlanChecks: expectEmptyAfterRefresh(),
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, `  expires_after = 3600`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						// b is fresh history; its expires_at is unknown until
+						// the apply stamps it (S5).
+						expectPlanDetailedPartial("accumulator_map.test", setDetail("a", nullDetail())),
+						expectPlanDetailUnknown("accumulator_map.test", "b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1", "b": "1"}),
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": stampedDetail(),
+					}),
+				},
+			},
+		},
+	})
+}
+
+// TestAccMapExpiresAfterRemoved pins T2: removing expires_after expires
+// nothing and nulls every expires_at.
+func TestAccMapExpiresAfterRemoved(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            mapConfig(`{ a = "1", b = "1" }`, `  expires_after = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"a": "1", "b": "1"})},
+			},
+			{
+				Config:            mapConfig(`{ a = "1" }`, `  expires_after = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"a": "1", "b": "1"})},
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						// T2 removes nothing: b survives the removal of
+						// expires_after, with its stamp nulled.
+						expectMapPlanOutputs(map[string]string{"a": "1", "b": "1"}),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1", "b": "1"}),
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": nullDetail(),
+					}),
+				},
+			},
+		},
+	})
+}
+
+// TestAccMapExpiresAfterDecreasePullsEarlier pins S3 end to end: b was
+// stamped +1h; decreasing to 1 recalculates min(old, ~now+1s) at apply, and the
+// following refresh culls it. Step 3 leaves a 1s stamp pending, so it carries
+// no post-refresh check.
+func TestAccMapExpiresAfterDecreasePullsEarlier(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            mapConfig(`{ a = "1", b = "1" }`, `  expires_after = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"a": "1", "b": "1"})},
+			},
+			{
+				Config:            mapConfig(`{ a = "1" }`, `  expires_after = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"a": "1", "b": "1"})},
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, `  expires_after = 1`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectMapPlanOutputs(map[string]string{"a": "1", "b": "1"}),
+						// A decrease recalculates b's stamp (min(old,
+						// candidate)), so it is fresh and unknown until the
+						// apply.
+						expectPlanDetailedPartial("accumulator_map.test", setDetail("a", nullDetail())),
+						expectPlanDetailUnknown("accumulator_map.test", "b"),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1", "b": "1"}),
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": stampedDetail(),
+					}),
+				},
+			},
+			{
+				Config:    mapConfig(`{ a = "1" }`, `  expires_after = 1`),
+				PreConfig: sleepPastExpiry(),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					// The refresh culls b before the plan, so the plan
+					// proposes nothing.
+					PreApply:             []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1"}),
+					expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+				},
+			},
+		},
+	})
+}
+
+// TestAccMapExpiresAfterIncreaseKeepsLive pins S4 for the map: an
+// expires_after increase re-times a still-live key to max(old, candidate)
+// and keeps it in outputs. The 300s first window keeps b alive across the
+// test; the 3600s increase pushes its stamp later. b is fresh under the
+// change, so it is unknown in each of those plans.
+func TestAccMapExpiresAfterIncreaseKeepsLive(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: mapConfig(`{ a = "1", b = "1" }`, `  expires_after = 300`),
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1", "b": "1"}),
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": nullDetail(),
+					}),
+				},
+				ConfigPlanChecks: expectEmptyAfterRefresh(),
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, `  expires_after = 300`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectMapPlanOutputs(map[string]string{"a": "1", "b": "1"}),
+						expectPlanDetailedPartial("accumulator_map.test", setDetail("a", nullDetail())),
+						expectPlanDetailUnknown("accumulator_map.test", "b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1", "b": "1"}),
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": stampedDetail(),
+					}),
+				},
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, `  expires_after = 3600`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						// b survives the increase and is re-stamped, so it is
+						// still present and its entry is unknown until the
+						// apply.
+						expectMapPlanOutputs(map[string]string{"a": "1", "b": "1"}),
+						expectPlanDetailedPartial("accumulator_map.test", setDetail("a", nullDetail())),
+						expectPlanDetailUnknown("accumulator_map.test", "b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{"a": "1", "b": "1"}),
+					expectDetailed("accumulator_map.test", map[string]knownvalue.Check{
+						"a": nullDetail(), "b": stampedDetail(),
+					}),
+				},
+			},
+		},
+	})
+}
+
+// TestAccMapUnknownExpiresAfterAtPlan pins the fallback path: expires_after
+// derived from an upstream unknown stays unknown at plan, so outputs and
+// detailed_outputs plan as unknown and the apply resolves them with the
+// apply clock. The upstream resource diffs forever (uuid), so there is no
+// post-refresh check, matching TestAccMapOutputsUnknownWhenInputsUnknown.
+func TestAccMapUnknownExpiresAfterAtPlan(t *testing.T) {
+	config := `
+resource "accumulator_list" "src" {
+  inputs = [uuid()]
+  length = 1
+}
+
+resource "accumulator_map" "test" {
+  inputs         = { a = "1" }
+  expires_after  = length(accumulator_list.src.outputs)
+}
+`
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config:             config,
+			ExpectNonEmptyPlan: true,
+			ConfigPlanChecks: resource.ConfigPlanChecks{
+				PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectUnknownValue("accumulator_map.test", tfjsonpath.New("outputs")),
+					plancheck.ExpectUnknownValue("accumulator_map.test", tfjsonpath.New("detailed_outputs")),
+				},
+			},
+			ConfigStateChecks: []statecheck.StateCheck{
+				expectMapOutputs(map[string]string{"a": "1"}),
+				expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+			},
+		}},
+	})
+}
