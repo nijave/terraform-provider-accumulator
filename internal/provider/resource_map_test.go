@@ -297,6 +297,7 @@ func TestAccMapOutputsUnknownWhenInputsUnknown(t *testing.T) {
 					plancheck.ExpectUnknownValue("accumulator_map.test", tfjsonpath.New("outputs")),
 					plancheck.ExpectUnknownValue("accumulator_map.test", tfjsonpath.New("accumulated")),
 					plancheck.ExpectUnknownValue("accumulator_map.test", tfjsonpath.New("id")),
+					plancheck.ExpectUnknownValue("accumulator_map.test", tfjsonpath.New("detailed_outputs")),
 				},
 			},
 			ConfigStateChecks: []statecheck.StateCheck{
@@ -1251,4 +1252,87 @@ func TestAccMapImportMalformed(t *testing.T) {
 			})
 		})
 	}
+}
+
+// TestAccMapDelayedForDecreaseRevealsSooner pins that a pending key stamped
+// +1h; decreasing to 1 recalculates min(old, now+1s) at apply, and the
+// following refresh reveals it. Step 2 leaves a 1s stamp pending, so it
+// carries no post-refresh check.
+func TestAccMapDelayedForDecreaseRevealsSooner(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            mapConfig(`{ a = "1" }`, `  delayed_for = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{})},
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, `  delayed_for = 1`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectMapPlanOutputs(map[string]string{}),
+						expectPlanDetailVisibleUnknown("accumulator_map.test", "a"),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectDetailed("accumulator_map.test", setDetail("a", pendingDetail())),
+				},
+			},
+			{
+				Config:    mapConfig(`{ a = "1" }`, `  delayed_for = 1`),
+				PreConfig: sleepPastExpiry(),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"a": "1"})},
+			},
+		},
+	})
+}
+
+// TestAccMapDelayedForIncreaseKeepsPending pins D4: an increase restamps
+// the pending key (fresh, unknown in the plan) and it stays hidden.
+func TestAccMapDelayedForIncreaseKeepsPending(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:            mapConfig(`{ a = "1" }`, `  delayed_for = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{})},
+			},
+			{
+				Config: mapConfig(`{ a = "1" }`, `  delayed_for = 7200`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						expectMapPlanOutputs(map[string]string{}),
+						expectPlanDetailVisibleUnknown("accumulator_map.test", "a"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectMapOutputs(map[string]string{}),
+					expectDetailed("accumulator_map.test", setDetail("a", pendingDetail())),
+				},
+			},
+		},
+	})
+}
+
+// TestAccMapEmptyStringKey pins that "" is a legal map key: it is stored,
+// revealed, and stable across a refresh.
+func TestAccMapEmptyStringKey(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config: mapConfig(`{ "" = "1" }`, ""),
+			ConfigStateChecks: []statecheck.StateCheck{
+				expectMapOutputs(map[string]string{"": "1"}),
+				expectDetailed("accumulator_map.test", setDetail("", nullDetail())),
+			},
+			ConfigPlanChecks: expectEmptyAfterRefresh(),
+		}},
+	})
 }
