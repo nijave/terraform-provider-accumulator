@@ -79,6 +79,47 @@ func setFromStrings(ctx context.Context, values []string) (types.Set, diag.Diagn
 	return types.SetValueFrom(ctx, types.StringType, values)
 }
 
+// stringMapFromMap converts a map(string) to a Go map. Null and unknown are
+// both treated as absent and produce a nil map with no diagnostic, matching
+// stringsFromList: a null required attribute is a schema violation the
+// framework already reports, and an unknown value is resolved before Create
+// or Update runs.
+func stringMapFromMap(ctx context.Context, m types.Map) (map[string]string, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	if m.IsNull() || m.IsUnknown() {
+		return nil, diags
+	}
+	var out map[string]string
+	diags.Append(m.ElementsAs(ctx, &out, false)...)
+	return out, diags
+}
+
+// mapFromStringMap converts a Go map to a concrete map(string). A nil map
+// becomes an empty map, never null: an empty accumulated history must be
+// written as {} so state round-trips without a diff against an empty config.
+func mapFromStringMap(ctx context.Context, values map[string]string) (types.Map, diag.Diagnostics) {
+	if values == nil {
+		values = map[string]string{}
+	}
+	return types.MapValueFrom(ctx, types.StringType, values)
+}
+
+// mapContainsUnknown is listContainsUnknown for a map(string): the map
+// itself or any of its values unknown. A map whose keys are unknown is
+// wholly unknown in Terraform, so the element walk only ever meets unknown
+// values.
+func mapContainsUnknown(m types.Map) bool {
+	if m.IsUnknown() {
+		return true
+	}
+	for _, element := range m.Elements() {
+		if element.IsUnknown() {
+			return true
+		}
+	}
+	return false
+}
+
 // detailedObjectType is the element type of detailed_outputs on both
 // resources: an object with two nullable RFC 3339 strings. expires_at is
 // when the value leaves accumulated (null: cannot expire); visible_at is
