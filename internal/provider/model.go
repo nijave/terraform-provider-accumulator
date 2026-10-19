@@ -28,7 +28,7 @@ func stringsFromList(ctx context.Context, list types.List) ([]string, diag.Diagn
 }
 
 // stringsFromSet is stringsFromList for a set(string). Element order is not
-// meaningful for a set; the result is only ever fed to accumulate.Merge, which
+// meaningful for a set; the result is only ever fed to accumulate.Union, which
 // is a union.
 func stringsFromSet(ctx context.Context, set types.Set) ([]string, diag.Diagnostics) {
 	var diags diag.Diagnostics
@@ -70,7 +70,7 @@ func listFromStrings(ctx context.Context, values []string) (types.List, diag.Dia
 
 // setFromStrings is listFromStrings for a set(string). values must already be
 // unique: the framework reports a duplicate as a diagnostic rather than
-// collapsing it silently. Every caller passes accumulate.Merge's output, which
+// collapsing it silently. Every caller passes accumulate.Union's output, which
 // is unique, so a diagnostic here means a caller bug rather than bad input.
 func setFromStrings(ctx context.Context, values []string) (types.Set, diag.Diagnostics) {
 	if values == nil {
