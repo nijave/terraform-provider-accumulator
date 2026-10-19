@@ -34,6 +34,18 @@ func NewSetResource() resource.Resource {
 	return &setResource{}
 }
 
+// setShape adapts accumulator_set to the shared phases in core.go: a set of
+// strings is its own identity list. Import deduplicates the seeded outputs
+// and seeds no inputs; an inputs key in the ID is accepted and ignored.
+var setShape = sliceShape(stringsFromSet, setFromStrings,
+	func(id string) ([]string, []string, error) {
+		seed, err := accumulate.ParseImport(id)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, accumulate.Union(nil, seed.Outputs), nil
+	})
+
 // priorAccumulated reads the store from state: accumulated, or outputs when
 // state predates the attribute (2026-10-15-accumulator-delayed-for-design.md
 // section 9).
@@ -374,47 +386,21 @@ func (r *setResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
-// Read culls expired values and reveals due ones: the refresh-time half of both
-// designs. Read cannot see configuration, so both decisions run on stored
-// stamps alone. It writes state only when a value was dropped or revealed, or
-// when state predates accumulated and needs it filled from outputs
-// (2026-10-15-accumulator-delayed-for-design.md section 9), which keeps the
-// plan after a refresh empty.
+// Read culls expired values and reveals due ones through readPhase. It
+// writes state only when a value was dropped or revealed, or when state
+// predates accumulated and needs it filled from outputs.
 func (r *setResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state setResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	values, d := state.priorAccumulated(ctx)
+	acc, out, changed, d := readPhase(ctx, setShape, &state.coreModel, state.Accumulated, state.Outputs)
 	resp.Diagnostics.Append(d...)
-	prior, d := stampsFromMap(ctx, state.DetailedOutputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
+	if !changed || resp.Diagnostics.HasError() {
 		return
 	}
-
-	now := clockNow()
-	survivors, expires := accumulate.FilterExpired(values, prior.Expires, now)
-	visible, pending := accumulate.FilterPending(survivors, prior.Visible, now)
-	if !state.Accumulated.IsNull() && len(survivors) == len(values) && len(pending) == len(prior.Visible) {
-		return
-	}
-
-	acc, d := setFromStrings(ctx, survivors)
-	resp.Diagnostics.Append(d...)
-	out, d := setFromStrings(ctx, visible)
-	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, survivors, stamps{Expires: expires, Visible: pending})
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	state.Accumulated = acc
-	state.Outputs = out
-	state.DetailedOutputs = detailed
+	state.Accumulated, state.Outputs = acc, out
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 

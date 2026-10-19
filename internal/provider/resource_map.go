@@ -37,6 +37,23 @@ func NewMapResource() resource.Resource {
 	return &mapResource{}
 }
 
+// mapShape adapts accumulator_map to the shared phases in core.go. The stamp
+// functions run over the sorted keys, so values never reach them
+// (2026-10-18-accumulator-map-design.md V3: a value change is never an
+// entry), and Project re-attaches the values. Import seeds no inputs; an
+// inputs key in the ID is accepted and ignored.
+var mapShape = shape[map[string]string, types.Map]{
+	decode:  stringMapFromMap,
+	encode:  mapFromStringMap,
+	keys:    accumulate.SortedKeys,
+	project: accumulate.Project,
+	hash:    accumulate.HashMapID,
+	parse: func(id string) (map[string]string, map[string]string, error) {
+		seed, err := accumulate.ParseMapImport(id)
+		return nil, seed.Outputs, err
+	},
+}
+
 // priorAccumulated reads the store from state: accumulated, or outputs when
 // state lacks it (2026-10-18-accumulator-map-design.md
 // section 10).
@@ -370,47 +387,21 @@ func (r *mapResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
-// Read culls expired keys and reveals due ones: the refresh-time half of
-// both designs. Read cannot see configuration, so both decisions run on
-// stored stamps alone. It writes state only when a key was dropped or
-// revealed, or when state lacks accumulated and needs it filled from
-// outputs, which keeps the plan after a refresh empty.
+// Read culls expired keys and reveals due ones through readPhase. It writes
+// state only when a key was dropped or revealed, or when state lacks
+// accumulated and needs it filled from outputs.
 func (r *mapResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state mapResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	values, d := state.priorAccumulated(ctx)
+	acc, out, changed, d := readPhase(ctx, mapShape, &state.coreModel, state.Accumulated, state.Outputs)
 	resp.Diagnostics.Append(d...)
-	prior, d := stampsFromMap(ctx, state.DetailedOutputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
+	if !changed || resp.Diagnostics.HasError() {
 		return
 	}
-
-	keys := accumulate.SortedKeys(values)
-	now := clockNow()
-	survivors, expires := accumulate.FilterExpired(keys, prior.Expires, now)
-	visible, pending := accumulate.FilterPending(survivors, prior.Visible, now)
-	if !state.Accumulated.IsNull() && len(survivors) == len(keys) && len(pending) == len(prior.Visible) {
-		return
-	}
-
-	acc, d := mapFromStringMap(ctx, accumulate.Project(values, survivors))
-	resp.Diagnostics.Append(d...)
-	out, d := mapFromStringMap(ctx, accumulate.Project(values, visible))
-	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, survivors, stamps{Expires: expires, Visible: pending})
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	state.Accumulated = acc
-	state.Outputs = out
-	state.DetailedOutputs = detailed
+	state.Accumulated, state.Outputs = acc, out
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
