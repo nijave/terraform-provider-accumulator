@@ -91,6 +91,13 @@ or state files, and state loss all discard the accumulated history. `inputs` is
 stored in state, so `tofu plan` and `tofu state show` expose it: do not
 accumulate secrets.
 
+`expires_after` is the only bound on `accumulator_set` and `accumulator_map`
+growth; the list is bounded by `length`. Each accumulated entry is stored in
+state several times: in `inputs` while supplied, in `accumulated`, in `outputs`
+once visible, and in its `detailed_outputs` entry. Large maps or sets make state
+and plan output correspondingly large, so keep them small or set
+`expires_after`.
+
 ## Documentation
 
 The [provider documentation](docs/index.md) lists all three resources. The
