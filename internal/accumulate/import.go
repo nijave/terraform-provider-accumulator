@@ -4,6 +4,7 @@ package accumulate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 )
@@ -24,15 +25,33 @@ type ImportSeed struct {
 // a plain passthrough ID, so the ID carries the seed itself.
 //
 // Errors name the expected shape and quote the offending key only, never the
-// full payload: a diagnostic reaches the console and CI logs.
+// full payload: a diagnostic reaches the console and CI logs. A duplicated
+// top-level key is decoded last-wins by encoding/json and is not rejected.
 func ParseImport(id string) (ImportSeed, error) {
 	seed := ImportSeed{Inputs: []string{}, Outputs: []string{}}
+	err := parseSeed(id, stringArray,
+		"import ID must be a JSON object with optional \"inputs\" and \"outputs\" arrays of strings, "+
+			"for example {\"inputs\":[\"a\"],\"outputs\":[\"a\",\"b\"]}",
+		func(k string, v []string) {
+			if k == "inputs" {
+				seed.Inputs = v
+			} else {
+				seed.Outputs = v
+			}
+		})
+	if err != nil {
+		return ImportSeed{}, err
+	}
+	return seed, nil
+}
 
+// parseSeed decodes the top-level import object, validates and sorts its keys,
+// and decodes each value with decode. shape is the full message for a payload
+// that is not an object. set receives each decoded value by key.
+func parseSeed[T any](id string, decode func(json.RawMessage) (T, error), shape string, set func(key string, v T)) error {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(id), &object); err != nil || object == nil {
-		return ImportSeed{}, fmt.Errorf(
-			"import ID must be a JSON object with optional \"inputs\" and \"outputs\" arrays of strings, " +
-				"for example {\"inputs\":[\"a\"],\"outputs\":[\"a\",\"b\"]}")
+		return errors.New(shape)
 	}
 
 	// Sorted so a payload with more than one mistake reports the same key every
@@ -45,20 +64,16 @@ func ParseImport(id string) (ImportSeed, error) {
 
 	for _, k := range keys {
 		if k != "inputs" && k != "outputs" {
-			return ImportSeed{}, fmt.Errorf(
+			return fmt.Errorf(
 				"import ID key %q is not recognized; the only recognized keys are \"inputs\" and \"outputs\"", k)
 		}
-		values, err := stringArray(object[k])
+		values, err := decode(object[k])
 		if err != nil {
-			return ImportSeed{}, fmt.Errorf("import ID key %q %v", k, err)
+			return fmt.Errorf("import ID key %q %v", k, err)
 		}
-		if k == "inputs" {
-			seed.Inputs = values
-		} else {
-			seed.Outputs = values
-		}
+		set(k, values)
 	}
-	return seed, nil
+	return nil
 }
 
 // stringArray decodes a JSON value that must be an array of strings. A JSON
@@ -95,37 +110,23 @@ type MapImportSeed struct {
 //
 // The same contract as ParseImport: only "inputs" and "outputs" are
 // recognized, each must be a JSON object whose values are strings, and
-// errors name the expected shape and quote the offending key only.
+// errors name the expected shape and quote the offending key only. A
+// duplicated top-level key is decoded last-wins by encoding/json and is not
+// rejected.
 func ParseMapImport(id string) (MapImportSeed, error) {
 	seed := MapImportSeed{Inputs: map[string]string{}, Outputs: map[string]string{}}
-
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(id), &object); err != nil || object == nil {
-		return MapImportSeed{}, fmt.Errorf(
-			"import ID must be a JSON object with optional \"inputs\" and \"outputs\" objects of strings, " +
-				"for example {\"inputs\":{\"k\":\"v\"},\"outputs\":{\"k\":\"v\"}}")
-	}
-
-	keys := make([]string, 0, len(object))
-	for k := range object {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		if k != "inputs" && k != "outputs" {
-			return MapImportSeed{}, fmt.Errorf(
-				"import ID key %q is not recognized; the only recognized keys are \"inputs\" and \"outputs\"", k)
-		}
-		values, err := stringObject(object[k])
-		if err != nil {
-			return MapImportSeed{}, fmt.Errorf("import ID key %q %v", k, err)
-		}
-		if k == "inputs" {
-			seed.Inputs = values
-		} else {
-			seed.Outputs = values
-		}
+	err := parseSeed(id, stringObject,
+		"import ID must be a JSON object with optional \"inputs\" and \"outputs\" objects of strings, "+
+			"for example {\"inputs\":{\"k\":\"v\"},\"outputs\":{\"k\":\"v\"}}",
+		func(k string, v map[string]string) {
+			if k == "inputs" {
+				seed.Inputs = v
+			} else {
+				seed.Outputs = v
+			}
+		})
+	if err != nil {
+		return MapImportSeed{}, err
 	}
 	return seed, nil
 }

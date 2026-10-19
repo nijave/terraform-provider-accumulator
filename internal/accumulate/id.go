@@ -20,14 +20,7 @@ func HashID(values []string) string {
 	if values == nil {
 		values = []string{}
 	}
-	encoded, err := json.Marshal(values)
-	if err != nil {
-		// json.Marshal of a []string has no error path. Keeping the branch means
-		// a future change to the input type cannot silently hash empty bytes.
-		panic(fmt.Sprintf("accumulate: hashing %T: %v", values, err))
-	}
-	sum := sha256.Sum256(encoded)
-	return hex.EncodeToString(sum[:])
+	return hashJSON(values)
 }
 
 // HashMapID is HashID for a map: the lowercase hex SHA-256 of the canonical
@@ -39,11 +32,16 @@ func HashMapID(values map[string]string) string {
 	if values == nil {
 		values = map[string]string{}
 	}
+	return hashJSON(values)
+}
+
+// hashJSON hashes the JSON encoding of an already-normalized value.
+func hashJSON[T []string | map[string]string](values T) string {
 	encoded, err := json.Marshal(values)
 	if err != nil {
-		// json.Marshal of a map[string]string has no error path. Keeping the
-		// branch means a future change to the value type cannot silently hash
-		// empty bytes.
+		// json.Marshal of these types has no error path. Keeping the branch
+		// means a future change to the value type cannot silently hash empty
+		// bytes.
 		panic(fmt.Sprintf("accumulate: hashing %T: %v", values, err))
 	}
 	sum := sha256.Sum256(encoded)
