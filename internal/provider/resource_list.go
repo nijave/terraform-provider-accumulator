@@ -45,18 +45,14 @@ func (m listResourceModel) priorAccumulated(ctx context.Context) ([]string, diag
 	return stringsFromList(ctx, m.Accumulated)
 }
 
-// listResourceModel is accumulator_list's state model.
+// listResourceModel is accumulator_list's state model: the shared
+// attributes plus length and the three lists.
 type listResourceModel struct {
-	Inputs              types.List   `tfsdk:"inputs"`
-	Length              types.Int64  `tfsdk:"length"`
-	TriggersReset       types.String `tfsdk:"triggers_reset"`
-	TriggersReplacement types.String `tfsdk:"triggers_replacement"`
-	ExpiresAfter        types.Int64  `tfsdk:"expires_after"`
-	DelayedFor          types.Int64  `tfsdk:"delayed_for"`
-	Accumulated         types.List   `tfsdk:"accumulated"`
-	Outputs             types.List   `tfsdk:"outputs"`
-	DetailedOutputs     types.Map    `tfsdk:"detailed_outputs"`
-	ID                  types.String `tfsdk:"id"`
+	coreModel
+	Inputs      types.List  `tfsdk:"inputs"`
+	Length      types.Int64 `tfsdk:"length"`
+	Accumulated types.List  `tfsdk:"accumulated"`
+	Outputs     types.List  `tfsdk:"outputs"`
 }
 
 func (r *listResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -536,15 +532,10 @@ func (r *listResource) ImportState(ctx context.Context, req resource.ImportState
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &listResourceModel{
-		Inputs:              inputs,
-		Length:              types.Int64Null(),
-		TriggersReset:       types.StringNull(),
-		TriggersReplacement: types.StringNull(),
-		ExpiresAfter:        types.Int64Null(),
-		DelayedFor:          types.Int64Null(),
-		Accumulated:         outputs,
-		Outputs:             outputs,
-		DetailedOutputs:     detailed,
-		ID:                  types.StringValue(accumulate.HashID(seed.Inputs)),
+		coreModel:   importedCore(detailed, accumulate.HashID(seed.Inputs)),
+		Inputs:      inputs,
+		Length:      types.Int64Null(),
+		Accumulated: outputs,
+		Outputs:     outputs,
 	})...)
 }

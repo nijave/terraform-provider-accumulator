@@ -57,17 +57,13 @@ func (r *setResource) ValidateConfig(ctx context.Context, req resource.ValidateC
 	resp.Diagnostics.Append(checkDelayShorterThanExpiry(config.DelayedFor, config.ExpiresAfter)...)
 }
 
-// setResourceModel is accumulator_set's state model.
+// setResourceModel is accumulator_set's state model: the shared attributes
+// plus inputs (a list, the shape users write) and the two sets.
 type setResourceModel struct {
-	Inputs              types.List   `tfsdk:"inputs"`
-	TriggersReset       types.String `tfsdk:"triggers_reset"`
-	TriggersReplacement types.String `tfsdk:"triggers_replacement"`
-	ExpiresAfter        types.Int64  `tfsdk:"expires_after"`
-	DelayedFor          types.Int64  `tfsdk:"delayed_for"`
-	Accumulated         types.Set    `tfsdk:"accumulated"`
-	Outputs             types.Set    `tfsdk:"outputs"`
-	DetailedOutputs     types.Map    `tfsdk:"detailed_outputs"`
-	ID                  types.String `tfsdk:"id"`
+	coreModel
+	Inputs      types.List `tfsdk:"inputs"`
+	Accumulated types.Set  `tfsdk:"accumulated"`
+	Outputs     types.Set  `tfsdk:"outputs"`
 }
 
 func (r *setResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -536,14 +532,9 @@ func (r *setResource) ImportState(ctx context.Context, req resource.ImportStateR
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &setResourceModel{
-		Inputs:              inputs,
-		TriggersReset:       types.StringNull(),
-		TriggersReplacement: types.StringNull(),
-		ExpiresAfter:        types.Int64Null(),
-		DelayedFor:          types.Int64Null(),
-		Accumulated:         outputs,
-		Outputs:             outputs,
-		DetailedOutputs:     detailed,
-		ID:                  types.StringValue(accumulate.HashID(merged)),
+		coreModel:   importedCore(detailed, accumulate.HashID(merged)),
+		Inputs:      inputs,
+		Accumulated: outputs,
+		Outputs:     outputs,
 	})...)
 }

@@ -59,17 +59,13 @@ func (r *mapResource) ValidateConfig(ctx context.Context, req resource.ValidateC
 	resp.Diagnostics.Append(checkDelayShorterThanExpiry(config.DelayedFor, config.ExpiresAfter)...)
 }
 
-// mapResourceModel is accumulator_map's state model.
+// mapResourceModel is accumulator_map's state model: the shared attributes
+// plus the three maps.
 type mapResourceModel struct {
-	Inputs              types.Map    `tfsdk:"inputs"`
-	TriggersReset       types.String `tfsdk:"triggers_reset"`
-	TriggersReplacement types.String `tfsdk:"triggers_replacement"`
-	ExpiresAfter        types.Int64  `tfsdk:"expires_after"`
-	DelayedFor          types.Int64  `tfsdk:"delayed_for"`
-	Accumulated         types.Map    `tfsdk:"accumulated"`
-	Outputs             types.Map    `tfsdk:"outputs"`
-	DetailedOutputs     types.Map    `tfsdk:"detailed_outputs"`
-	ID                  types.String `tfsdk:"id"`
+	coreModel
+	Inputs      types.Map `tfsdk:"inputs"`
+	Accumulated types.Map `tfsdk:"accumulated"`
+	Outputs     types.Map `tfsdk:"outputs"`
 }
 
 func (r *mapResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -520,14 +516,9 @@ func (r *mapResource) ImportState(ctx context.Context, req resource.ImportStateR
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &mapResourceModel{
-		Inputs:              inputs,
-		TriggersReset:       types.StringNull(),
-		TriggersReplacement: types.StringNull(),
-		ExpiresAfter:        types.Int64Null(),
-		DelayedFor:          types.Int64Null(),
-		Accumulated:         outputs,
-		Outputs:             outputs,
-		DetailedOutputs:     detailed,
-		ID:                  types.StringValue(accumulate.HashMapID(seeded)),
+		coreModel:   importedCore(detailed, accumulate.HashMapID(seeded)),
+		Inputs:      inputs,
+		Accumulated: outputs,
+		Outputs:     outputs,
 	})...)
 }
