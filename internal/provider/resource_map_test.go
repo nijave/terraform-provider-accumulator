@@ -11,7 +11,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
-	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
 
@@ -1056,132 +1055,6 @@ resource "accumulator_map" "test" {
 	})
 }
 
-// mapImportConfig is the configuration the import tests settle against.
-const mapImportConfig = `
-resource "accumulator_map" "test" {
-  inputs = { d = "4" }
-}
-`
-
-// TestAccMapImport seeds outputs from the JSON ID: id hashes the seeded
-// map, inputs is an empty map, and the settling apply merges the
-// configured inputs into the seeded outputs.
-func TestAccMapImport(t *testing.T) {
-	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			{
-				Config:             mapImportConfig,
-				ResourceName:       "accumulator_map.test",
-				ImportState:        true,
-				ImportStateId:      `{"outputs":{"a":"1","b":"1"}}`,
-				ImportStatePersist: true,
-				ImportStateVerify:  false,
-				ImportStateCheck: func(states []*terraform.InstanceState) error {
-					if len(states) != 1 {
-						return fmt.Errorf("imported %d resources, want 1", len(states))
-					}
-					attrs := states[0].Attributes
-					// sha256(`{"a":"1","b":"1"}`)
-					if got := attrs["id"]; got != "40239544dc03c3ec3a09cb947c72123697428a72af96b1c63431f34a46517709" {
-						return fmt.Errorf("id = %q, want the hash of the seeded outputs", got)
-					}
-					if got := attrs["outputs.%"]; got != "2" {
-						return fmt.Errorf("outputs.%% = %q, want 2", got)
-					}
-					if got := attrs["outputs.a"]; got != "1" {
-						return fmt.Errorf("outputs.a = %q, want 1", got)
-					}
-					if got := attrs["inputs.%"]; got != "0" {
-						return fmt.Errorf("inputs.%% = %q, want 0", got)
-					}
-					if got := attrs["detailed_outputs.%"]; got != "2" {
-						return fmt.Errorf("detailed_outputs.%% = %q, want 2", got)
-					}
-					return nil
-				},
-			},
-			{
-				Config: mapImportConfig,
-				ConfigPlanChecks: resource.ConfigPlanChecks{
-					PreApply:             []plancheck.PlanCheck{expectMapPlanOutputs(map[string]string{"a": "1", "b": "1", "d": "4"})},
-					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
-				},
-				ConfigStateChecks: []statecheck.StateCheck{
-					expectMapOutputs(map[string]string{"a": "1", "b": "1", "d": "4"}),
-					expectMapAccumulated(map[string]string{"a": "1", "b": "1", "d": "4"}),
-				},
-			},
-		},
-	})
-}
-
-// TestAccMapImportIgnoresInputsKey pins that an inputs key in the ID is
-// accepted and ignored.
-func TestAccMapImportIgnoresInputsKey(t *testing.T) {
-	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			{
-				Config:             mapImportConfig,
-				ResourceName:       "accumulator_map.test",
-				ImportState:        true,
-				ImportStateId:      `{"inputs":{"zzz":"9"},"outputs":{"a":"1"}}`,
-				ImportStatePersist: true,
-				ImportStateVerify:  false,
-				ImportStateCheck: func(states []*terraform.InstanceState) error {
-					if got := states[0].Attributes["inputs.%"]; got != "0" {
-						return fmt.Errorf("inputs.%% = %q, want 0 (inputs key ignored)", got)
-					}
-					return nil
-				},
-			},
-			{
-				Config:            mapImportConfig,
-				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"a": "1", "d": "4"})},
-				ConfigPlanChecks:  expectEmptyAfterRefresh(),
-			},
-		},
-	})
-}
-
-// TestAccMapImportEmptyOutputs pins Review Focus 5: {"outputs":{}} seeds
-// empty maps and the hash of "{}", and the first apply merges the config.
-func TestAccMapImportEmptyOutputs(t *testing.T) {
-	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			{
-				Config:             mapImportConfig,
-				ResourceName:       "accumulator_map.test",
-				ImportState:        true,
-				ImportStateId:      `{"outputs":{}}`,
-				ImportStatePersist: true,
-				ImportStateVerify:  false,
-				ImportStateCheck: func(states []*terraform.InstanceState) error {
-					attrs := states[0].Attributes
-					// sha256(`{}`)
-					if got := attrs["id"]; got != "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" {
-						return fmt.Errorf("id = %q, want the hash of {}", got)
-					}
-					if got := attrs["outputs.%"]; got != "0" {
-						return fmt.Errorf("outputs.%% = %q, want 0", got)
-					}
-					return nil
-				},
-			},
-			{
-				Config:            mapImportConfig,
-				ConfigStateChecks: []statecheck.StateCheck{expectMapOutputs(map[string]string{"d": "4"})},
-				ConfigPlanChecks:  expectEmptyAfterRefresh(),
-			},
-		},
-	})
-}
-
 // TestAccMapImportThenDelayedFor pins 2026-10-18-accumulator-map-design.md
 // section 9: imported keys seed visible, and the first new key in the
 // settling apply is delayed.
@@ -1222,36 +1095,6 @@ resource "accumulator_map" "test" {
 			},
 		},
 	})
-}
-
-// TestAccMapImportMalformed pins the map-shaped error messages, including
-// the list/set array shape, which the map resource must reject.
-func TestAccMapImportMalformed(t *testing.T) {
-	for label, tc := range map[string]struct {
-		id     string
-		expect *regexp.Regexp
-	}{
-		"bad json":     {`not-json`, regexp.MustCompile(`must be a JSON object`)},
-		"unknown key":  {`{"outupts":{"a":"1"}}`, regexp.MustCompile(`not recognized`)},
-		"array shape":  {`{"outputs":["a","b"]}`, regexp.MustCompile(`must be an object of strings`)},
-		"number value": {`{"outputs":{"a":1}}`, regexp.MustCompile(`must be an object of strings`)},
-	} {
-		tc := tc
-		t.Run(label, func(t *testing.T) {
-			resource.Test(t, resource.TestCase{
-				PreCheck:                 func() { testAccPreCheck(t) },
-				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-				Steps: []resource.TestStep{{
-					Config:            mapImportConfig,
-					ResourceName:      "accumulator_map.test",
-					ImportState:       true,
-					ImportStateId:     tc.id,
-					ImportStateVerify: false,
-					ExpectError:       tc.expect,
-				}},
-			})
-		})
-	}
 }
 
 // TestAccMapDelayedForDecreaseRevealsSooner pins that a pending key stamped

@@ -11,7 +11,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
-	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
 
@@ -825,35 +824,6 @@ resource "accumulator_set" "test" {
 			},
 		},
 	})
-}
-
-// importSeedsNullDetails is the ImportStateCheck shared by the import-then-
-// expire tests: import seeds one detailed_outputs entry per seeded output,
-// each with a null expires_at (spec section 8). It inspects the raw flatmap
-// because terraform-plugin-testing runs state checks only for Config steps,
-// not import steps. Null object attributes are omitted from the flatmap, so
-// each seeded value must have an entry object with both stamp attributes
-// declared (expires_at and visible_at, so % is 2) and no non-empty stamp.
-func importSeedsNullDetails(values ...string) func([]*terraform.InstanceState) error {
-	return func(states []*terraform.InstanceState) error {
-		if len(states) != 1 {
-			return fmt.Errorf("imported %d resources, want 1", len(states))
-		}
-		attrs := states[0].Attributes
-		if got := attrs["detailed_outputs.%"]; got != fmt.Sprint(len(values)) {
-			return fmt.Errorf("detailed_outputs.%% = %q, want %d", got, len(values))
-		}
-		for _, value := range values {
-			if got := attrs["detailed_outputs."+value+".%"]; got != "2" {
-				return fmt.Errorf("detailed_outputs.%s.%% = %q, want 2", value, got)
-			}
-			path := "detailed_outputs." + value + ".expires_at"
-			if got, ok := attrs[path]; ok && got != "" {
-				return fmt.Errorf("%s = %q, want null", path, got)
-			}
-		}
-		return nil
-	}
 }
 
 // TestAccSetExpiresAfterIncreaseKeepsLive pins S4 for the set: an
