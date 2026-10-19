@@ -1,7 +1,8 @@
 # terraform-provider-accumulator
 
-Terraform/OpenTofu resources that accumulate a value over successive applies
-while keeping a fixed history length, with the history stored in state. There is
+Terraform/OpenTofu resources that accumulate a value over successive applies,
+with the history stored in state. A list keeps a fixed history length; the other
+resources retain every value until a reset, a replacement, or expiry. There is
 no endpoint, no credential, no database, and no object store: the provider is
 two resources and a small amount of pure list and set logic.
 
@@ -41,9 +42,9 @@ Both resources accept an optional `expires_after` (seconds). A value that
 leaves `inputs` is removed once `expires_after` seconds have passed; a value
 that stays in `inputs` never expires. The computed `detailed_outputs` map
 reports each value's `expires_at` (RFC 3339) or null. Expiration is lazy and
-realized at refresh: a value is removed when a refresh runs after its time
-has passed, a late-applied saved plan expires nothing its own refresh did
-not already remove, and `-refresh=false` defers removal. See the resource
+realized at refresh: a value is removed when a refresh runs after its time has
+passed, a late-applied saved plan expires nothing its own refresh did not
+already remove, and `-refresh=false` defers removal. See the resource
 documentation for the full clock rules.
 
 Both resources also accept an optional `delayed_for` (seconds). A newly
@@ -65,10 +66,11 @@ tofu import accumulator_set.seen_hosts '{"outputs":["a","b"]}'
 ```
 
 Import seeds state only. For `accumulator_list`, `length` is required
-configuration and is not seeded, so the first apply after import supplies it and
-re-trims the seeded `outputs`. For `accumulator_set`, `inputs` is seeded as an
-empty list and the first apply unions the configured `inputs` into the seeded
-`outputs`.
+configuration and is not seeded, so the first plan after import supplies it from
+configuration and the apply re-trims the seeded `outputs`. For
+`accumulator_set`, `inputs` is seeded as an empty list; the first plan after
+import supplies the configured `inputs` and the apply unions them into the
+seeded `outputs`.
 
 ## History lives in state
 

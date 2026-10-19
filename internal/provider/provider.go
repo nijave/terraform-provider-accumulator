@@ -41,9 +41,10 @@ func (p *accumulatorProvider) Metadata(_ context.Context, _ provider.MetadataReq
 // endpoint, no credential, and no client to build.
 func (p *accumulatorProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Resources that accumulate a value over successive applies while keeping a " +
-			"fixed history length. The accumulated history lives in Terraform state, so there is no " +
-			"external store, endpoint, or credential to stand up.",
+		MarkdownDescription: "Resources that accumulate a value over successive applies — a list keeps a " +
+			"fixed history length; the other resources retain every value until a reset, a replacement, " +
+			"or expiry. The accumulated history lives in Terraform state, so there is no external " +
+			"store, endpoint, or credential to stand up.",
 	}
 }
 
