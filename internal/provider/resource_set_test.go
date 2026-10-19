@@ -329,7 +329,7 @@ func TestAccSetLeaverStampedOnInputsChange(t *testing.T) {
 					PreApply: []plancheck.PlanCheck{
 						expectSetPlanOutputs("a", "b"),
 						// b's expires_at is unknown until the apply stamps it.
-						expectPlanDetailedPartial("accumulator_set.test", setDetail("a", nullDetail())),
+						expectPlanDetailedPartial("accumulator_set.test", oneDetail("a", nullDetail())),
 						expectPlanDetailUnknown("accumulator_set.test", "b"),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -379,7 +379,7 @@ func TestAccSetExpiryRealizedOnRefresh(t *testing.T) {
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs("a"),
-					expectDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -406,7 +406,7 @@ func TestAccSetInInputsNeverExpires(t *testing.T) {
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs("a"),
-					expectDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -436,7 +436,7 @@ func TestAccSetExpiresAfterSetOnExistingResource(t *testing.T) {
 					PreApply: []plancheck.PlanCheck{
 						// b is fresh history; its expires_at is unknown until
 						// the apply stamps it (S5).
-						expectPlanDetailedPartial("accumulator_set.test", setDetail("a", nullDetail())),
+						expectPlanDetailedPartial("accumulator_set.test", oneDetail("a", nullDetail())),
 						expectPlanDetailUnknown("accumulator_set.test", "b"),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -511,7 +511,7 @@ func TestAccSetExpiresAfterZeroCullsNextRefresh(t *testing.T) {
 						expectSetPlanOutputs("a", "b"),
 						// b's stamp is fresh (a decrease to 0), unknown until
 						// the apply stamps it "now".
-						expectPlanDetailedPartial("accumulator_set.test", setDetail("a", nullDetail())),
+						expectPlanDetailedPartial("accumulator_set.test", oneDetail("a", nullDetail())),
 						expectPlanDetailUnknown("accumulator_set.test", "b"),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -533,7 +533,7 @@ func TestAccSetExpiresAfterZeroCullsNextRefresh(t *testing.T) {
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs("a"),
-					expectDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -565,7 +565,7 @@ func TestAccSetExpiresAfterDecreasePullsEarlier(t *testing.T) {
 						// A decrease recalculates b's stamp (min(old,
 						// candidate)), so it is fresh and unknown until the
 						// apply.
-						expectPlanDetailedPartial("accumulator_set.test", setDetail("a", nullDetail())),
+						expectPlanDetailedPartial("accumulator_set.test", oneDetail("a", nullDetail())),
 						expectPlanDetailUnknown("accumulator_set.test", "b"),
 					},
 				},
@@ -587,7 +587,7 @@ func TestAccSetExpiresAfterDecreasePullsEarlier(t *testing.T) {
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs("a"),
-					expectDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -618,13 +618,13 @@ func TestAccSetIncreaseDoesNotResurrect(t *testing.T) {
 					// b was culled at refresh; the plan only shows a.
 					PreApply: []plancheck.PlanCheck{
 						expectSetPlanOutputs("a"),
-						expectPlanDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+						expectPlanDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs("a"),
-					expectDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -692,13 +692,13 @@ func TestAccSetResetClearsStamps(t *testing.T) {
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						expectSetPlanOutputs("a"),
-						expectPlanDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+						expectPlanDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs("a"),
-					expectDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -730,13 +730,13 @@ func TestAccSetReplacementClearsStamps(t *testing.T) {
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction("accumulator_set.test", plancheck.ResourceActionReplace),
 						expectSetPlanOutputs("a"),
-						expectPlanDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+						expectPlanDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs("a"),
-					expectDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -774,7 +774,7 @@ resource "accumulator_set" "test" {
 			},
 			ConfigStateChecks: []statecheck.StateCheck{
 				expectSetOutputs("a"),
-				expectDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+				expectDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 			},
 		}},
 	})
@@ -811,7 +811,7 @@ resource "accumulator_set" "test" {
 					PreApply: []plancheck.PlanCheck{
 						// b is fresh history; its expires_at is unknown until
 						// the apply stamps it.
-						expectPlanDetailedPartial("accumulator_set.test", setDetail("a", nullDetail())),
+						expectPlanDetailedPartial("accumulator_set.test", oneDetail("a", nullDetail())),
 						expectPlanDetailUnknown("accumulator_set.test", "b"),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -881,7 +881,7 @@ func TestAccSetExpiresAfterIncreaseKeepsLive(t *testing.T) {
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						expectSetPlanOutputs("a", "b"),
-						expectPlanDetailedPartial("accumulator_set.test", setDetail("a", nullDetail())),
+						expectPlanDetailedPartial("accumulator_set.test", oneDetail("a", nullDetail())),
 						expectPlanDetailUnknown("accumulator_set.test", "b"),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -901,7 +901,7 @@ func TestAccSetExpiresAfterIncreaseKeepsLive(t *testing.T) {
 						// still present and its entry is unknown until the
 						// apply.
 						expectSetPlanOutputs("a", "b"),
-						expectPlanDetailedPartial("accumulator_set.test", setDetail("a", nullDetail())),
+						expectPlanDetailedPartial("accumulator_set.test", oneDetail("a", nullDetail())),
 						expectPlanDetailUnknown("accumulator_set.test", "b"),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -1043,7 +1043,7 @@ func TestAccSetRevealRealizedOnRefresh(t *testing.T) {
 				Config: setConfig(`["a"]`, `  delayed_for = 1`),
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs(),
-					expectDetailed("accumulator_set.test", setDetail("a", pendingDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", pendingDetail())),
 				},
 			},
 			{
@@ -1056,7 +1056,7 @@ func TestAccSetRevealRealizedOnRefresh(t *testing.T) {
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs("a"),
 					expectSetAccumulated("a"),
-					expectDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -1113,7 +1113,7 @@ func TestAccSetDelayedForDecreaseRevealsSooner(t *testing.T) {
 					},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
-					expectDetailed("accumulator_set.test", setDetail("a", pendingDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", pendingDetail())),
 				},
 			},
 			{
@@ -1150,7 +1150,7 @@ func TestAccSetDelayedForIncreaseKeepsPending(t *testing.T) {
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs(),
-					expectDetailed("accumulator_set.test", setDetail("a", pendingDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", pendingDetail())),
 				},
 			},
 		},
@@ -1174,7 +1174,7 @@ func TestAccSetDelayedForZeroRevealsNextRefresh(t *testing.T) {
 					// The apply stamps a with the current moment; the refresh
 					// that reveals it runs after these checks.
 					expectSetOutputs(),
-					expectDetailed("accumulator_set.test", setDetail("a", pendingDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", pendingDetail())),
 				},
 			},
 			{
@@ -1184,7 +1184,7 @@ func TestAccSetDelayedForZeroRevealsNextRefresh(t *testing.T) {
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs("a"),
-					expectDetailed("accumulator_set.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -1282,7 +1282,7 @@ func TestAccSetResetDelaysSeed(t *testing.T) {
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectSetOutputs(),
-					expectDetailed("accumulator_set.test", setDetail("a", pendingDetail())),
+					expectDetailed("accumulator_set.test", oneDetail("a", pendingDetail())),
 				},
 			},
 		},
@@ -1320,7 +1320,7 @@ resource "accumulator_set" "test" {
 			ConfigStateChecks: []statecheck.StateCheck{
 				expectSetOutputs(),
 				expectSetAccumulated("a"),
-				expectDetailed("accumulator_set.test", setDetail("a", pendingDetail())),
+				expectDetailed("accumulator_set.test", oneDetail("a", pendingDetail())),
 			},
 		}},
 	})

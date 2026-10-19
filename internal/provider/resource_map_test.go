@@ -303,7 +303,7 @@ func TestAccMapOutputsUnknownWhenInputsUnknown(t *testing.T) {
 			ConfigStateChecks: []statecheck.StateCheck{
 				statecheck.ExpectKnownValue("accumulator_map.test",
 					tfjsonpath.New("outputs"), knownvalue.MapSizeExact(1)),
-				expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+				expectDetailed("accumulator_map.test", oneDetail("a", nullDetail())),
 			},
 		}},
 	})
@@ -391,13 +391,13 @@ func TestAccMapValueChangeDoesNotStamp(t *testing.T) {
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						expectMapPlanOutputs(map[string]string{"a": "2"}),
-						expectPlanDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+						expectPlanDetailed("accumulator_map.test", oneDetail("a", nullDetail())),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectMapOutputs(map[string]string{"a": "2"}),
-					expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_map.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -435,7 +435,7 @@ func TestAccMapExpiryRealizedOnRefresh(t *testing.T) {
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectMapOutputs(map[string]string{"a": "1"}),
 					expectMapAccumulated(map[string]string{"a": "1"}),
-					expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_map.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -507,13 +507,13 @@ func TestAccMapResetClearsStamps(t *testing.T) {
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						expectMapPlanOutputs(map[string]string{"a": "1"}),
-						expectPlanDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+						expectPlanDetailed("accumulator_map.test", oneDetail("a", nullDetail())),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectMapOutputs(map[string]string{"a": "1"}),
-					expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_map.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -543,7 +543,7 @@ func TestAccMapExpiresAfterSetOnExistingResource(t *testing.T) {
 					PreApply: []plancheck.PlanCheck{
 						// b is fresh history; its expires_at is unknown until
 						// the apply stamps it (S5).
-						expectPlanDetailedPartial("accumulator_map.test", setDetail("a", nullDetail())),
+						expectPlanDetailedPartial("accumulator_map.test", oneDetail("a", nullDetail())),
 						expectPlanDetailUnknown("accumulator_map.test", "b"),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -620,7 +620,7 @@ func TestAccMapExpiresAfterDecreasePullsEarlier(t *testing.T) {
 						// A decrease recalculates b's stamp (min(old,
 						// candidate)), so it is fresh and unknown until the
 						// apply.
-						expectPlanDetailedPartial("accumulator_map.test", setDetail("a", nullDetail())),
+						expectPlanDetailedPartial("accumulator_map.test", oneDetail("a", nullDetail())),
 						expectPlanDetailUnknown("accumulator_map.test", "b"),
 					},
 				},
@@ -642,7 +642,7 @@ func TestAccMapExpiresAfterDecreasePullsEarlier(t *testing.T) {
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectMapOutputs(map[string]string{"a": "1"}),
-					expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_map.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -674,7 +674,7 @@ func TestAccMapExpiresAfterIncreaseKeepsLive(t *testing.T) {
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						expectMapPlanOutputs(map[string]string{"a": "1", "b": "1"}),
-						expectPlanDetailedPartial("accumulator_map.test", setDetail("a", nullDetail())),
+						expectPlanDetailedPartial("accumulator_map.test", oneDetail("a", nullDetail())),
 						expectPlanDetailUnknown("accumulator_map.test", "b"),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -694,7 +694,7 @@ func TestAccMapExpiresAfterIncreaseKeepsLive(t *testing.T) {
 						// still present and its entry is unknown until the
 						// apply.
 						expectMapPlanOutputs(map[string]string{"a": "1", "b": "1"}),
-						expectPlanDetailedPartial("accumulator_map.test", setDetail("a", nullDetail())),
+						expectPlanDetailedPartial("accumulator_map.test", oneDetail("a", nullDetail())),
 						expectPlanDetailUnknown("accumulator_map.test", "b"),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -741,7 +741,7 @@ resource "accumulator_map" "test" {
 			},
 			ConfigStateChecks: []statecheck.StateCheck{
 				expectMapOutputs(map[string]string{"a": "1"}),
-				expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+				expectDetailed("accumulator_map.test", oneDetail("a", nullDetail())),
 			},
 		}},
 	})
@@ -795,14 +795,14 @@ func TestAccMapOverwritePendingKey(t *testing.T) {
 						expectMapPlanOutputs(map[string]string{}),
 						expectMapPlanAccumulated(map[string]string{"a": "2"}),
 						// The prior stamp is kept (D2), so the planned entry is known.
-						expectPlanDetailed("accumulator_map.test", setDetail("a", pendingDetail())),
+						expectPlanDetailed("accumulator_map.test", oneDetail("a", pendingDetail())),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectMapOutputs(map[string]string{}),
 					expectMapAccumulated(map[string]string{"a": "2"}),
-					expectDetailed("accumulator_map.test", setDetail("a", pendingDetail())),
+					expectDetailed("accumulator_map.test", oneDetail("a", pendingDetail())),
 				},
 			},
 		},
@@ -854,7 +854,7 @@ func TestAccMapRevealRealizedOnRefresh(t *testing.T) {
 				Config: mapConfig(`{ a = "1" }`, `  delayed_for = 1`),
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectMapOutputs(map[string]string{}),
-					expectDetailed("accumulator_map.test", setDetail("a", pendingDetail())),
+					expectDetailed("accumulator_map.test", oneDetail("a", pendingDetail())),
 				},
 			},
 			{
@@ -867,7 +867,7 @@ func TestAccMapRevealRealizedOnRefresh(t *testing.T) {
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectMapOutputs(map[string]string{"a": "1"}),
 					expectMapAccumulated(map[string]string{"a": "1"}),
-					expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_map.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -890,13 +890,13 @@ func TestAccMapDelayedForRemoved(t *testing.T) {
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						expectMapPlanOutputs(map[string]string{"a": "1"}),
-						expectPlanDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+						expectPlanDetailed("accumulator_map.test", oneDetail("a", nullDetail())),
 					},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectMapOutputs(map[string]string{"a": "1"}),
-					expectDetailed("accumulator_map.test", setDetail("a", nullDetail())),
+					expectDetailed("accumulator_map.test", oneDetail("a", nullDetail())),
 				},
 			},
 		},
@@ -1012,7 +1012,7 @@ func TestAccMapResetDelaysSeed(t *testing.T) {
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectMapOutputs(map[string]string{}),
-					expectDetailed("accumulator_map.test", setDetail("a", pendingDetail())),
+					expectDetailed("accumulator_map.test", oneDetail("a", pendingDetail())),
 				},
 			},
 		},
@@ -1050,7 +1050,7 @@ resource "accumulator_map" "test" {
 			ConfigStateChecks: []statecheck.StateCheck{
 				expectMapOutputs(map[string]string{}),
 				expectMapAccumulated(map[string]string{"a": "1"}),
-				expectDetailed("accumulator_map.test", setDetail("a", pendingDetail())),
+				expectDetailed("accumulator_map.test", oneDetail("a", pendingDetail())),
 			},
 		}},
 	})
@@ -1276,7 +1276,7 @@ func TestAccMapDelayedForDecreaseRevealsSooner(t *testing.T) {
 					},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
-					expectDetailed("accumulator_map.test", setDetail("a", pendingDetail())),
+					expectDetailed("accumulator_map.test", oneDetail("a", pendingDetail())),
 				},
 			},
 			{
@@ -1313,7 +1313,7 @@ func TestAccMapDelayedForIncreaseKeepsPending(t *testing.T) {
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
 					expectMapOutputs(map[string]string{}),
-					expectDetailed("accumulator_map.test", setDetail("a", pendingDetail())),
+					expectDetailed("accumulator_map.test", oneDetail("a", pendingDetail())),
 				},
 			},
 		},
@@ -1330,7 +1330,7 @@ func TestAccMapEmptyStringKey(t *testing.T) {
 			Config: mapConfig(`{ "" = "1" }`, ""),
 			ConfigStateChecks: []statecheck.StateCheck{
 				expectMapOutputs(map[string]string{"": "1"}),
-				expectDetailed("accumulator_map.test", setDetail("", nullDetail())),
+				expectDetailed("accumulator_map.test", oneDetail("", nullDetail())),
 			},
 			ConfigPlanChecks: expectEmptyAfterRefresh(),
 		}},
