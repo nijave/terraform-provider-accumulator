@@ -220,7 +220,7 @@ func TestAccShared(t *testing.T) {
 }
 
 // sharedGroups is every group of rows TestAccShared runs.
-var sharedGroups = [][]sharedCase{expiryCases}
+var sharedGroups = [][]sharedCase{expiryCases, delayCases}
 
 // expiryCases are the expires_after rows. Each row's comment names the rule
 // it pins (2026-09-23-accumulator-expiration-design.md rule IDs).
@@ -751,5 +751,363 @@ var expiryCases = []sharedCase{
 			Config:      f.config(ids("a"), `  expires_after = 10000000000`),
 			ExpectError: regexp.MustCompile(`value must be between`),
 		}}
+	}},
+}
+
+// delayCases are the delayed_for rows. Each row's comment names the rule it
+// pins (2026-10-15-accumulator-delayed-for-design.md rule IDs).
+var delayCases = []sharedCase{
+	// D1. D1 on create: outputs plans as known and empty, accumulated as
+	// known and seeded, and every visible_at is unknown until the apply
+	// stamps it. The 3600s window keeps the post-refresh plan empty.
+	{"CreateWithDelayedFor", func(f flavor) []resource.TestStep {
+		return []resource.TestStep{{
+			Config: f.config(ids("a", "b"), `  delayed_for = 3600`),
+			ConfigPlanChecks: resource.ConfigPlanChecks{
+				PreApply: []plancheck.PlanCheck{
+					f.expectPlanOutputs(),
+					f.expectPlanAccumulated("a", "b"),
+					expectPlanDetailVisibleUnknown(f.addr, "a"),
+					expectPlanDetailVisibleUnknown(f.addr, "b"),
+				},
+				PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+			},
+			ConfigStateChecks: []statecheck.StateCheck{
+				f.expectOutputs(),
+				f.expectAccumulated("a", "b"),
+				expectDetailed(f.addr, map[string]knownvalue.Check{
+					"a": pendingDetail(), "b": pendingDetail(),
+				}),
+			},
+		}}
+	}},
+
+	// D2. Update, reset, and replacement all plan outputs and accumulated as
+	// known while delayed_for is set. On the update a stays visible (D5)
+	// and b enters and hides (D1); the list appends, so its history repeats
+	// a. Reset and replacement reseed and every value enters (T4).
+	{"OutputsKnownAtPlanTimeWithDelayedFor", func(f flavor) []resource.TestStep {
+		return []resource.TestStep{
+			{
+				Config:            f.config(ids("a"), ""),
+				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a")},
+			},
+			{
+				Config: f.config(ids("a", "b"), `  delayed_for = 3600`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						f.expectPlanOutputs("a", "a"),
+						f.expectPlanAccumulated("a", "a", "b"),
+						expectPlanDetailVisibleUnknown(f.addr, "b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					f.expectOutputs("a", "a"),
+					f.expectAccumulated("a", "a", "b"),
+					expectDetailed(f.addr, map[string]knownvalue.Check{
+						"a": nullDetail(), "b": pendingDetail(),
+					}),
+				},
+			},
+			{
+				Config: f.config(ids("a", "b"), "  delayed_for = 3600\n  triggers_reset = \"v1\""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						f.expectPlanOutputs(),
+						f.expectPlanAccumulated("a", "b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs(), f.expectAccumulated("a", "b")},
+			},
+			{
+				Config: f.config(ids("a", "b"), "  delayed_for = 3600\n  triggers_reset = \"v1\"\n  triggers_replacement = \"r1\""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(f.addr, plancheck.ResourceActionReplace),
+						f.expectPlanOutputs(),
+						f.expectPlanAccumulated("a", "b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs(), f.expectAccumulated("a", "b")},
+			},
+		}
+	}},
+
+	// D3. V1: with no configuration change, the step's refresh reveals a
+	// before planning, so the plan is empty and outputs now holds it with a
+	// null visible_at.
+	{"RevealRealizedOnRefresh", func(f flavor) []resource.TestStep {
+		return []resource.TestStep{
+			{
+				Config: f.config(ids("a"), `  delayed_for = 1`),
+				ConfigStateChecks: []statecheck.StateCheck{
+					f.expectOutputs(),
+					expectDetailed(f.addr, oneDetail("a", pendingDetail())),
+				},
+			},
+			{
+				Config:    f.config(ids("a"), `  delayed_for = 1`),
+				PreConfig: sleepPastExpiry(),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply:             []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					f.expectOutputs("a"),
+					f.expectAccumulated("a"),
+					expectDetailed(f.addr, oneDetail("a", nullDetail())),
+				},
+			},
+		}
+	}},
+
+	// D4. T2: removing delayed_for reveals every pending value at that
+	// apply, and the plan shows the revealed outputs.
+	{"DelayedForRemoved", func(f flavor) []resource.TestStep {
+		return []resource.TestStep{
+			{
+				Config:            f.config(ids("a", "b"), `  delayed_for = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs()},
+			},
+			{
+				Config: f.config(ids("a", "b"), ""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						f.expectPlanOutputs("a", "b"),
+						expectPlanDetailed(f.addr, map[string]knownvalue.Check{
+							"a": nullDetail(), "b": nullDetail(),
+						}),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					f.expectOutputs("a", "b"),
+					expectDetailed(f.addr, map[string]knownvalue.Check{
+						"a": nullDetail(), "b": nullDetail(),
+					}),
+				},
+			},
+		}
+	}},
+
+	// D5. D3 end to end: a was stamped +1h; decreasing to 1 recalculates
+	// min(old, now+1s) at apply, and the following refresh reveals it. Step
+	// 2 leaves a 1s stamp pending, so it carries no post-refresh check.
+	{"DelayedForDecreaseRevealsSooner", func(f flavor) []resource.TestStep {
+		return []resource.TestStep{
+			{
+				Config:            f.config(ids("a"), `  delayed_for = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs()},
+			},
+			{
+				Config: f.config(ids("a"), `  delayed_for = 1`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						f.expectPlanOutputs(),
+						expectPlanDetailVisibleUnknown(f.addr, "a"),
+					},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					expectDetailed(f.addr, oneDetail("a", pendingDetail())),
+				},
+			},
+			{
+				Config:    f.config(ids("a"), `  delayed_for = 1`),
+				PreConfig: sleepPastExpiry(),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a")},
+			},
+		}
+	}},
+
+	// D6. D4: an increase restamps the pending value (fresh, unknown in the
+	// plan) and it stays hidden.
+	{"DelayedForIncreaseKeepsPending", func(f flavor) []resource.TestStep {
+		return []resource.TestStep{
+			{
+				Config:            f.config(ids("a"), `  delayed_for = 3600`),
+				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs()},
+			},
+			{
+				Config: f.config(ids("a"), `  delayed_for = 7200`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						f.expectPlanOutputs(),
+						expectPlanDetailVisibleUnknown(f.addr, "a"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					f.expectOutputs(),
+					expectDetailed(f.addr, oneDetail("a", pendingDetail())),
+				},
+			},
+		}
+	}},
+
+	// D7. The delayed_for = 0 reading of V1: the apply stamps the current
+	// moment and leaves outputs unchanged; the next refresh reveals, with no
+	// sleep needed.
+	{"DelayedForZeroRevealsNextRefresh", func(f flavor) []resource.TestStep {
+		return []resource.TestStep{
+			{
+				Config: f.config(ids("a"), `  delayed_for = 0`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{f.expectPlanOutputs()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					// The apply stamps a with the current moment; the refresh
+					// that reveals it runs after these checks.
+					f.expectOutputs(),
+					expectDetailed(f.addr, oneDetail("a", pendingDetail())),
+				},
+			},
+			{
+				Config: f.config(ids("a"), `  delayed_for = 0`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply:             []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					f.expectOutputs("a"),
+					expectDetailed(f.addr, oneDetail("a", nullDetail())),
+				},
+			},
+		}
+	}},
+
+	// D8. C1: equal and greater are rejected before any plan; shorter is
+	// accepted. The rejected steps create nothing, so the accepted step is
+	// a create.
+	{"DelayedForMustBeShorterThanExpiresAfter", func(f flavor) []resource.TestStep {
+		c1 := regexp.MustCompile(`delayed_for must be shorter than expires_after`)
+		return []resource.TestStep{
+			{
+				Config:      f.config(ids("a"), "  delayed_for = 10\n  expires_after = 10"),
+				ExpectError: c1,
+			},
+			{
+				Config:      f.config(ids("a"), "  delayed_for = 11\n  expires_after = 10"),
+				ExpectError: c1,
+			},
+			{
+				Config:            f.config(ids("a"), "  delayed_for = 9\n  expires_after = 10"),
+				ConfigStateChecks: []statecheck.StateCheck{f.expectAccumulated("a")},
+			},
+		}
+	}},
+
+	// D9. T5: a value that leaves inputs while pending keeps visible_at and
+	// gains expires_at.
+	{"PendingLeaverStamped", func(f flavor) []resource.TestStep {
+		return []resource.TestStep{
+			{
+				Config:            f.config(ids("a", "b"), "  delayed_for = 3600\n  expires_after = 7200"),
+				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs()},
+			},
+			{
+				Config: f.config(ids("a"), "  delayed_for = 3600\n  expires_after = 7200"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						f.expectPlanOutputs(),
+						f.expectPlanAccumulated("a", "b", "a"),
+						expectPlanDetailUnknown(f.addr, "b"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					f.expectOutputs(),
+					expectDetailed(f.addr, map[string]knownvalue.Check{
+						"a": pendingDetail(), "b": pendingLeaverDetail(),
+					}),
+				},
+			},
+		}
+	}},
+
+	// D10. T4 with a value that was already visible: a reset reseeds and the
+	// seeded value enters again with a full window.
+	{"ResetDelaysSeed", func(f flavor) []resource.TestStep {
+		return []resource.TestStep{
+			{
+				Config:            f.config(ids("a"), `  triggers_reset = "v1"`),
+				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a")},
+			},
+			{
+				Config: f.config(ids("a"), "  delayed_for = 3600\n  triggers_reset = \"v2\""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						f.expectPlanOutputs(),
+						f.expectPlanAccumulated("a"),
+						expectPlanDetailVisibleUnknown(f.addr, "a"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					f.expectOutputs(),
+					expectDetailed(f.addr, oneDetail("a", pendingDetail())),
+				},
+			},
+		}
+	}},
+
+	// D11. The fallback path: an unknown delayed_for leaves outputs,
+	// accumulated, and detailed_outputs unknown at plan, and the apply
+	// resolves them with its own clock.
+	{"UnknownDelayedForAtPlan", func(f flavor) []resource.TestStep {
+		return []resource.TestStep{{
+			Config:             unknownSource + f.config(ids("a"), `  delayed_for = length(accumulator_list.src.outputs) * 3600`),
+			ExpectNonEmptyPlan: true,
+			ConfigPlanChecks: resource.ConfigPlanChecks{
+				PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectUnknownValue(f.addr, tfjsonpath.New("outputs")),
+					plancheck.ExpectUnknownValue(f.addr, tfjsonpath.New("accumulated")),
+					plancheck.ExpectUnknownValue(f.addr, tfjsonpath.New("detailed_outputs")),
+				},
+			},
+			ConfigStateChecks: []statecheck.StateCheck{
+				f.expectOutputs(),
+				f.expectAccumulated("a"),
+				expectDetailed(f.addr, oneDetail("a", pendingDetail())),
+			},
+		}}
+	}},
+
+	// D12. Delay spec section 8: imported values seed visible, and the first
+	// new value in the settling apply is delayed. The list seeds no inputs,
+	// so the settling apply appends d.
+	{"ImportThenDelayedFor", func(f flavor) []resource.TestStep {
+		config := f.config(ids("d"), `  delayed_for = 3600`)
+		return []resource.TestStep{
+			{
+				Config:             config,
+				ResourceName:       f.addr,
+				ImportState:        true,
+				ImportStateId:      f.importID(nil, ids("a", "b")),
+				ImportStatePersist: true,
+				ImportStateVerify:  false,
+			},
+			{
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						f.expectPlanOutputs("a", "b"),
+						f.expectPlanAccumulated("a", "b", "d"),
+					},
+					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				ConfigStateChecks: []statecheck.StateCheck{
+					f.expectOutputs("a", "b"),
+					expectDetailed(f.addr, map[string]knownvalue.Check{
+						"a": nullDetail(), "b": nullDetail(), "d": pendingDetail(),
+					}),
+				},
+			},
+		}
 	}},
 }
