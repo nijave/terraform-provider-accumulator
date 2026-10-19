@@ -14,10 +14,10 @@ import (
 	"github.com/nijave/terraform-provider-accumulator/internal/accumulate"
 )
 
-// stampArgs carries everything the stamp decisions need besides the
-// accumulated result itself. On a create or reseed the caller leaves
-// PriorAccumulated nil and Prior zero, so every value enters with a full
-// delay window and no expiry stamp survives (spec T4).
+// stampArgs carries everything the stamp decisions need besides the accumulated
+// result itself. On a create or reseed the caller leaves PriorAccumulated nil
+// and Prior zero, so every value enters with a full delay window and no expiry
+// stamp survives (2026-10-15-accumulator-delayed-for-design.md T4).
 type stampArgs struct {
 	PlanInputs       []string
 	PriorAccumulated []string
@@ -38,9 +38,10 @@ func (a stampArgs) classify(accumulated []string) classified {
 	return c
 }
 
-// planStamps is the known-path plan composition (spec section 6): outputs
-// is accumulated minus pending values, and detailed_outputs carries known
-// keeper stamps and unknown fresh ones. It reads no clock.
+// planStamps is the known-path plan composition
+// (2026-10-15-accumulator-delayed-for-design.md section 6): outputs is
+// accumulated minus pending values, and detailed_outputs carries known keeper
+// stamps and unknown fresh ones. It reads no clock.
 func planStamps(ctx context.Context, accumulated []string, a stampArgs) ([]string, types.Map, diag.Diagnostics) {
 	c := a.classify(accumulated)
 	outputs := accumulate.Visible(accumulated, c.KeepVisible, c.FreshVisible)
@@ -86,11 +87,12 @@ func applyFallback(ctx context.Context, merged []string, a stampArgs, now time.T
 	return accumulated, outputs, detailed, diags
 }
 
-// checkDelayShorterThanExpiry is spec C1: with both attributes known and
-// non-null, delayed_for must be strictly less than expires_after, or a
-// value could expire before it ever became visible. ValidateConfig runs it
-// on configuration and ModifyPlan repeats it on the plan, so a pair that
-// was unknown at validation still fails at plan rather than at apply.
+// checkDelayShorterThanExpiry is 2026-10-15-accumulator-delayed-for-design.md
+// C1: with both attributes known and non-null, delayed_for must be strictly
+// less than expires_after, or a value could expire before it ever became
+// visible. ValidateConfig runs it on configuration and ModifyPlan repeats it on
+// the plan, so a pair that was unknown at validation still fails at plan rather
+// than at apply.
 func checkDelayShorterThanExpiry(delay, expires types.Int64) diag.Diagnostics {
 	var diags diag.Diagnostics
 	if delay.IsNull() || delay.IsUnknown() || expires.IsNull() || expires.IsUnknown() {

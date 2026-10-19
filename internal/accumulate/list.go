@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-// Package accumulate holds the list and set behavior of the accumulator
-// resources as pure Go. It imports no Terraform packages, so every decision it
-// makes is unit-testable without a plugin harness and internal/provider stays a
-// mechanical translation.
+// Package accumulate holds the pure accumulation behavior of the accumulator
+// resources as Go functions. It imports no Terraform packages, so every
+// decision it makes is unit-testable without a plugin harness and
+// internal/provider stays a mechanical translation.
 package accumulate
 
 // Trim returns the last length elements of values. A length <= 0 yields an
