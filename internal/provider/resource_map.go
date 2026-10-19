@@ -509,7 +509,8 @@ func (r *mapResource) ImportState(ctx context.Context, req resource.ImportStateR
 
 	inputs, d := mapFromStringMap(ctx, map[string]string{})
 	resp.Diagnostics.Append(d...)
-	seeded := accumulate.MergeMap(nil, seed.Outputs)
+	// ParseMapImport returns a fresh, non-nil map, so no defensive copy is needed.
+	seeded := seed.Outputs
 	outputs, d := mapFromStringMap(ctx, seeded)
 	resp.Diagnostics.Append(d...)
 	detailed, d := mapFromStamps(ctx, accumulate.SortedKeys(seeded), stamps{})
