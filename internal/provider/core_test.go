@@ -76,3 +76,45 @@ func TestModelsRoundTripThroughEmbeddedCore(t *testing.T) {
 		})
 	}
 }
+
+// TestModifyPlanNullInputElementWithUnknownBranchInput pins that planned
+// inputs are decoded only after the unknown guards: a known collection with a
+// null element plus an unknown expires_after leaves outputs unknown and
+// reports no error, as ModifyPlan did before planPhase.
+func TestModifyPlanNullInputElementWithUnknownBranchInput(t *testing.T) {
+	nullElem := tftypes.NewValue(goldString, nil)
+	for _, f := range goldFlavors() {
+		t.Run(f.name, func(t *testing.T) {
+			ctx := context.Background()
+			f.sch = resourceSchema(t, f.res)
+			typ := f.sch.Type().TerraformType(ctx)
+			var inputs tftypes.Value
+			if f.name == "map" {
+				inputs = tftypes.NewValue(goldMapType, map[string]tftypes.Value{"b": nullElem})
+			} else {
+				inputs = tftypes.NewValue(goldListType, []tftypes.Value{goldStr("a"), nullElem})
+			}
+			proposed := goldObject(ctx, f, map[string]tftypes.Value{
+				"inputs":        inputs,
+				"expires_after": goldUnknown(tftypes.Number),
+			}, true, goldUnknown(goldString))
+			req := resource.ModifyPlanRequest{
+				Config: tfsdk.Config{Raw: proposed, Schema: f.sch},
+				Plan:   tfsdk.Plan{Raw: proposed, Schema: f.sch},
+				State:  tfsdk.State{Raw: tftypes.NewValue(typ, nil), Schema: f.sch},
+			}
+			resp := resource.ModifyPlanResponse{Plan: req.Plan}
+			f.res.(resource.ResourceWithModifyPlan).ModifyPlan(ctx, req, &resp)
+			if resp.Diagnostics.HasError() {
+				t.Fatalf("unexpected diagnostics: %s", goldDiags(resp.Diagnostics))
+			}
+			var attrs map[string]tftypes.Value
+			if err := resp.Plan.Raw.As(&attrs); err != nil {
+				t.Fatal(err)
+			}
+			if attrs["outputs"].IsKnown() {
+				t.Fatalf("outputs = %s, want unknown", attrs["outputs"])
+			}
+		})
+	}
+}

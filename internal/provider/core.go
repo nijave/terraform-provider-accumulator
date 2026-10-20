@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/nijave/terraform-provider-accumulator/internal/accumulate"
@@ -121,5 +122,172 @@ func readPhase[C any, V attr.Value](ctx context.Context, s shape[C, V], m *coreM
 		return accumulated, outputs, false, diags
 	}
 	m.DetailedOutputs = detailed
+	return accumulated, outputs, true, diags
+}
+
+// configUnknown reports whether a shared branch input is unknown in a plan:
+// a trigger, expires_after, or delayed_for. Each resource adds its own
+// terms (inputs, and the list's length).
+func (c coreModel) configUnknown() bool {
+	return c.TriggersReset.IsUnknown() || c.TriggersReplacement.IsUnknown() ||
+		c.ExpiresAfter.IsUnknown() || c.DelayedFor.IsUnknown()
+}
+
+// stateUnknown is configUnknown for prior state, which also mirrors the
+// computed detailed_outputs. State never holds unknowns in practice; the
+// guard keeps ModifyPlan from computing against one if it ever did.
+func (c coreModel) stateUnknown() bool {
+	return c.configUnknown() || c.DetailedOutputs.IsUnknown()
+}
+
+// nextFunc is a resource's accumulation step: the next accumulated value
+// from the prior one, with the planned inputs already bound. reseed
+// discards prior (a create, a replacement, or a triggers_reset change).
+type nextFunc[C any] func(reseed bool, prior C) C
+
+// newStampArgs builds the stamp decision inputs for planInputs. state is
+// nil on create, where nothing is prior. A reseed keeps the prior
+// expires_after and delayed_for (they still decide whether a stamp is
+// recalculated) but discards the prior store and stamps, so every value
+// enters with a full delay window
+// (2026-10-15-accumulator-delayed-for-design.md T4).
+func newStampArgs(planInputs []string, plan, state *coreModel, priorKeys []string, prior stamps, reseed bool) stampArgs {
+	args := stampArgs{
+		PlanInputs:     planInputs,
+		PlannedExpires: int64Ptr(plan.ExpiresAfter),
+		PlannedDelay:   int64Ptr(plan.DelayedFor),
+	}
+	if state != nil {
+		args.PriorExpires = int64Ptr(state.ExpiresAfter)
+		args.PriorDelay = int64Ptr(state.DelayedFor)
+	}
+	if !reseed {
+		args.PriorAccumulated = priorKeys
+		args.Prior = prior
+	}
+	return args
+}
+
+// readPlanAndState is ModifyPlan's opening, shared by every resource. It
+// decodes the plan, and the state unless the resource is being created
+// (state is null then, and Get refuses a null state). ok is false on a
+// destroy plan, which carries no planned state to compute from and must
+// stay null, and on a decode error.
+func readPlanAndState[M any](ctx context.Context, req resource.ModifyPlanRequest, plan, state *M, diags *diag.Diagnostics) (creating, ok bool) {
+	if req.Plan.Raw.IsNull() {
+		return false, false
+	}
+	diags.Append(req.Plan.Get(ctx, plan)...)
+	if diags.HasError() {
+		return false, false
+	}
+	creating = req.State.Raw.IsNull()
+	if !creating {
+		diags.Append(req.State.Get(ctx, state)...)
+		if diags.HasError() {
+			return creating, false
+		}
+	}
+	return creating, true
+}
+
+// planCall is one ModifyPlan call's per-resource input to planPhase.
+type planCall[C any, V attr.Value] struct {
+	// creating is true when there is no prior state.
+	creating bool
+	// plan is the planned shared attributes; planPhase writes its
+	// detailed_outputs and, on create or replacement, its id.
+	plan *coreModel
+	// state is the prior shared attributes; ignored when creating.
+	state *coreModel
+	// stateAccumulated and stateOutputs are the prior collections.
+	stateAccumulated, stateOutputs V
+	// decodeInputs decodes the planned inputs and binds them into the
+	// accumulation step. planPhase calls it after the unknown guards and the
+	// delay check, so an input that cannot decode (a null element) is
+	// reported only where a plan would otherwise be computed from it.
+	decodeInputs func(ctx context.Context) (planInputs C, next nextFunc[C], diags diag.Diagnostics)
+}
+
+// planPhase is ModifyPlan's shared body. It writes the outputs the next apply
+// will produce into the plan, so the plan shows concrete values and
+// downstream resources can plan against them. It runs the same
+// accumulation (call.next) as Create and Update, so the planned value cannot
+// disagree with the applied one. It reads no clock
+// (2026-10-15-accumulator-delayed-for-design.md section 6): fresh
+// detailed_outputs entries plan as unknown and the apply stamps them.
+//
+// ok is false when the plan must be left as the framework built it: an
+// unknown branch input makes the planned outputs unknowable, not merely
+// unresolved, because a triggers_reset that may have changed yields either
+// the reseeded collection or the accumulated one, and no single planned
+// value can express that. Leaving outputs untouched keeps the framework's
+// unknown marking in place until Create or Update resolves the value. The
+// caller has already checked its own terms (inputs, and the list's length).
+// ok is also false on an error.
+func planPhase[C any, V attr.Value](ctx context.Context, s shape[C, V], call planCall[C, V]) (accumulated, outputs V, ok bool, diags diag.Diagnostics) {
+	if call.plan.configUnknown() {
+		return accumulated, outputs, false, diags
+	}
+	if !call.creating && (call.state.stateUnknown() ||
+		call.stateAccumulated.IsUnknown() || call.stateOutputs.IsUnknown()) {
+		return accumulated, outputs, false, diags
+	}
+	diags.Append(checkDelayShorterThanExpiry(call.plan.DelayedFor, call.plan.ExpiresAfter)...)
+	if diags.HasError() {
+		return accumulated, outputs, false, diags
+	}
+
+	planInputs, next, d := call.decodeInputs(ctx)
+	diags.Append(d...)
+
+	var prior C
+	var priorStamps stamps
+	var state *coreModel
+	if !call.creating {
+		state = call.state
+		prior, d = priorAccumulated(ctx, s, call.stateAccumulated, call.stateOutputs)
+		diags.Append(d...)
+		priorStamps, d = stampsFromMap(ctx, call.state.DetailedOutputs)
+		diags.Append(d...)
+	}
+	if diags.HasError() {
+		return accumulated, outputs, false, diags
+	}
+
+	// The branch conditions mirror Update's, with two additions: a null state
+	// means Create runs, and a triggers_replacement change means a
+	// replacement, which also runs Create. Both seed from the planned inputs
+	// alone, which is what reseed expresses.
+	replacing := !call.creating && !call.plan.TriggersReplacement.Equal(call.state.TriggersReplacement)
+	reseed := call.creating || replacing || !call.plan.TriggersReset.Equal(call.state.TriggersReset)
+
+	merged := next(reseed, prior)
+	var priorKeys []string
+	if !reseed {
+		priorKeys = s.keys(prior)
+	}
+	args := newStampArgs(s.keys(planInputs), call.plan, state, priorKeys, priorStamps, reseed)
+
+	// No clock here (2026-10-15-accumulator-delayed-for-design.md section 6):
+	// refresh already culled and revealed, so membership is a pure function of
+	// state and configuration.
+	visible, detailed, d := planStamps(ctx, s.keys(merged), args)
+	diags.Append(d...)
+	accumulated, d = s.encode(ctx, merged)
+	diags.Append(d...)
+	outputs, d = s.encode(ctx, s.project(merged, visible))
+	diags.Append(d...)
+	if diags.HasError() {
+		return accumulated, outputs, false, diags
+	}
+
+	call.plan.DetailedOutputs = detailed
+	if call.creating || replacing {
+		// Create identifies the resource from the planned inputs. An in-place
+		// update keeps the state id; UseStateForUnknown has already resolved
+		// it into the plan by the time ModifyPlan runs.
+		call.plan.ID = types.StringValue(s.hash(planInputs))
+	}
 	return accumulated, outputs, true, diags
 }

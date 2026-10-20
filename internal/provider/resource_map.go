@@ -54,6 +54,15 @@ var mapShape = shape[map[string]string, types.Map]{
 	},
 }
 
+// mapNext is accumulator_map's accumulation step: the planned inputs merged
+// over the prior map. Merging is idempotent, so no inputs comparison is
+// needed: merging whenever Create or Update runs is correct.
+func mapNext(planInputs map[string]string) nextFunc[map[string]string] {
+	return func(reseed bool, prior map[string]string) map[string]string {
+		return accumulate.NextMapOutputs(reseed, planInputs, prior)
+	}
+}
+
 // priorAccumulated reads the store from state: accumulated, or outputs when
 // state lacks it (2026-10-18-accumulator-map-design.md
 // section 10).
@@ -268,122 +277,33 @@ func (r *mapResource) Create(ctx context.Context, req resource.CreateRequest, re
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
-// ModifyPlan writes the outputs the next apply will produce into the plan.
-// It runs the same accumulation algorithm as Create and Update, through the
-// same accumulate.NextMapOutputs call, so the planned value cannot disagree
-// with the applied one. It reads no clock: fresh detailed_outputs entries
-// plan as unknown and the apply stamps them. When any value the branch
-// decision depends on is still unknown, outputs is left unknown and the
-// apply resolves it.
+// ModifyPlan writes the outputs the next apply will produce into the plan
+// through planPhase. Terraform marks unknown map values individually, so an
+// unknown value counts as an unknown branch input; a map whose keys are
+// unknown is wholly unknown.
 func (r *mapResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	// A destroy plan carries no planned state to compute from, and the
-	// framework requires it to stay null.
-	if req.Plan.Raw.IsNull() {
+	var plan, state mapResourceModel
+	creating, ok := readPlanAndState(ctx, req, &plan, &state, &resp.Diagnostics)
+	if !ok || mapContainsUnknown(plan.Inputs) || (!creating && state.Inputs.IsUnknown()) {
 		return
 	}
 
-	var plan mapResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// State is null when the resource is being created, and Get refuses a null
-	// state, so it is only read when there is one to read.
-	creating := req.State.Raw.IsNull()
-
-	var state mapResourceModel
-	if !creating {
-		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-	}
-
-	// An unknown branch input makes the planned outputs unknowable, not merely
-	// unresolved: a triggers_reset that may have changed yields either the
-	// reseeded map or the merged one, and no single planned value can express
-	// that. Leaving outputs untouched keeps the framework's unknown marking in
-	// place until Create or Update resolves the value. Unknown values inside
-	// inputs count too: Terraform marks them individually.
-	if mapContainsUnknown(plan.Inputs) || plan.TriggersReset.IsUnknown() ||
-		plan.TriggersReplacement.IsUnknown() || plan.ExpiresAfter.IsUnknown() ||
-		plan.DelayedFor.IsUnknown() {
-		return
-	}
-	if !creating && (state.Inputs.IsUnknown() || state.Outputs.IsUnknown() ||
-		state.TriggersReset.IsUnknown() || state.TriggersReplacement.IsUnknown() ||
-		state.ExpiresAfter.IsUnknown() || state.DetailedOutputs.IsUnknown() ||
-		state.DelayedFor.IsUnknown() || state.Accumulated.IsUnknown()) {
-		return
-	}
-	resp.Diagnostics.Append(checkDelayShorterThanExpiry(plan.DelayedFor, plan.ExpiresAfter)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	planInputs, d := stringMapFromMap(ctx, plan.Inputs)
+	acc, out, ok, d := planPhase(ctx, mapShape, planCall[map[string]string, types.Map]{
+		creating:         creating,
+		plan:             &plan.coreModel,
+		state:            &state.coreModel,
+		stateAccumulated: state.Accumulated,
+		stateOutputs:     state.Outputs,
+		decodeInputs: func(ctx context.Context) (map[string]string, nextFunc[map[string]string], diag.Diagnostics) {
+			in, d := stringMapFromMap(ctx, plan.Inputs)
+			return in, mapNext(in), d
+		},
+	})
 	resp.Diagnostics.Append(d...)
-	var priorAccumulated map[string]string
-	var prior stamps
-	args := stampArgs{
-		PlanInputs:     accumulate.SortedKeys(planInputs),
-		PlannedExpires: int64Ptr(plan.ExpiresAfter),
-		PlannedDelay:   int64Ptr(plan.DelayedFor),
-	}
-	if !creating {
-		priorAccumulated, d = state.priorAccumulated(ctx)
-		resp.Diagnostics.Append(d...)
-		prior, d = stampsFromMap(ctx, state.DetailedOutputs)
-		resp.Diagnostics.Append(d...)
-		args.PriorExpires = int64Ptr(state.ExpiresAfter)
-		args.PriorDelay = int64Ptr(state.DelayedFor)
-	}
-	if resp.Diagnostics.HasError() {
+	if !ok || resp.Diagnostics.HasError() {
 		return
 	}
-
-	// The branch conditions mirror Update's, with two additions: a null state
-	// means Create runs, and a triggers_replacement change means a replacement
-	// means Create runs. Both seed outputs from the planned inputs alone,
-	// which is what reseed expresses. No inputs comparison is needed, matching
-	// Update: merging is idempotent, so merging whenever Create or Update runs
-	// is correct.
-	replacing := !creating && !plan.TriggersReplacement.Equal(state.TriggersReplacement)
-	reseed := creating || replacing || !plan.TriggersReset.Equal(state.TriggersReset)
-
-	merged := accumulate.NextMapOutputs(reseed, planInputs, priorAccumulated)
-
-	// A reseed discards history: no prior store and no prior stamps, so
-	// every key enters with a full delay window (2026-10-15-accumulator-delayed-for-design.md
-	// T4).
-	if !reseed {
-		args.PriorAccumulated = accumulate.SortedKeys(priorAccumulated)
-		args.Prior = prior
-	}
-
-	// No clock here (2026-10-18-accumulator-map-design.md section
-	// 6): refresh already culled and revealed, so membership is a pure
-	// function of state and configuration.
-	visible, detailed, d := planStamps(ctx, accumulate.SortedKeys(merged), args)
-	resp.Diagnostics.Append(d...)
-	acc, d := mapFromStringMap(ctx, merged)
-	resp.Diagnostics.Append(d...)
-	out, d := mapFromStringMap(ctx, accumulate.Project(merged, visible))
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	plan.Accumulated = acc
-	plan.Outputs = out
-	plan.DetailedOutputs = detailed
-	if creating || replacing {
-		// Create identifies the resource from the planned inputs. An in-place
-		// update keeps the state id; UseStateForUnknown has already resolved
-		// it into the plan by the time ModifyPlan runs.
-		plan.ID = types.StringValue(accumulate.HashMapID(planInputs))
-	}
+	plan.Accumulated, plan.Outputs = acc, out
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
