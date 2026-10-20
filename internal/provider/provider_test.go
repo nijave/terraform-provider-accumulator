@@ -410,7 +410,7 @@ func sleepPastExpiry() func() {
 	return func() { time.Sleep(2 * time.Second) }
 }
 
-// setDetail builds a one-entry map for expectDetailed/expectPlanDetailed.
-func setDetail(value string, check knownvalue.Check) map[string]knownvalue.Check {
+// oneDetail builds a one-entry map for expectDetailed/expectPlanDetailed.
+func oneDetail(value string, check knownvalue.Check) map[string]knownvalue.Check {
 	return map[string]knownvalue.Check{value: check}
 }
