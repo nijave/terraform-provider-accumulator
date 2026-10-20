@@ -291,3 +291,97 @@ func planPhase[C any, V attr.Value](ctx context.Context, s shape[C, V], call pla
 	}
 	return accumulated, outputs, true, diags
 }
+
+// applyCall is one Create or Update call's per-resource input to
+// applyPhase.
+type applyCall[C any, V attr.Value] struct {
+	// plan is the planned shared attributes; applyPhase writes its
+	// detailed_outputs and id.
+	plan *coreModel
+	// planAccumulated and planOutputs are the planned collections.
+	planAccumulated, planOutputs V
+	// state is the prior shared attributes, nil for Create.
+	state *coreModel
+	// stateAccumulated and stateOutputs are the prior collections; ignored
+	// for Create.
+	stateAccumulated, stateOutputs V
+	// planInputs is the decoded planned inputs.
+	planInputs C
+	// next computes the next accumulated value.
+	next nextFunc[C]
+}
+
+// applyPhase is the shared body of Create and Update. Create runs it with a
+// nil state: that is the reseed case, with no prior store and no prior
+// stamps, so every value enters (2026-10-15-accumulator-delayed-for-design.md
+// T4). It also runs after a replacement, which is what makes
+// triggers_replacement reseed. triggers_replacement is never inspected for
+// Update: a change to it plans a replacement, and Update is not called.
+//
+// Known path: ModifyPlan already computed accumulated, outputs,
+// detailed_outputs, and the id without reading the clock
+// (2026-10-15-accumulator-delayed-for-design.md section 6). Membership is
+// realized verbatim (the returned collections are the planned ones), and
+// the stamp classification is reproduced through the same pure functions,
+// so only the fresh entries (unknown in the plan) are resolved, with the
+// apply clock. That is what keeps the applied value identical to the
+// planned one.
+//
+// Fallback path: the plan is unknown (an unknown branch input at plan
+// time), the plan promised unknown, and the apply decides membership and
+// both stamps with its own clock through applyFallback.
+func applyPhase[C any, V attr.Value](ctx context.Context, s shape[C, V], call applyCall[C, V]) (accumulated, outputs V, diags diag.Diagnostics) {
+	var prior C
+	var priorStamps stamps
+	reseed := true
+	if call.state != nil {
+		var d diag.Diagnostics
+		prior, d = priorAccumulated(ctx, s, call.stateAccumulated, call.stateOutputs)
+		diags.Append(d...)
+		priorStamps, d = stampsFromMap(ctx, call.state.DetailedOutputs)
+		diags.Append(d...)
+		if diags.HasError() {
+			return accumulated, outputs, diags
+		}
+		reseed = !call.plan.TriggersReset.Equal(call.state.TriggersReset)
+	}
+	var priorKeys []string
+	if !reseed {
+		priorKeys = s.keys(prior)
+	}
+	args := newStampArgs(s.keys(call.planInputs), call.plan, call.state, priorKeys, priorStamps, reseed)
+	now := clockNow()
+
+	if !call.planOutputs.IsUnknown() && !call.planAccumulated.IsUnknown() && !call.plan.DetailedOutputs.IsUnknown() {
+		planned, d := s.decode(ctx, call.planAccumulated)
+		diags.Append(d...)
+		detailed, d := applyStamps(ctx, s.keys(planned), args, now)
+		diags.Append(d...)
+		if diags.HasError() {
+			return accumulated, outputs, diags
+		}
+		call.plan.DetailedOutputs = detailed
+		if call.state != nil {
+			call.plan.ID = call.state.ID
+		}
+		return call.planAccumulated, call.planOutputs, diags
+	}
+
+	merged := call.next(reseed, prior)
+	survivors, visible, detailed, d := applyFallback(ctx, s.keys(merged), args, now)
+	diags.Append(d...)
+	accumulated, d = s.encode(ctx, s.project(merged, survivors))
+	diags.Append(d...)
+	outputs, d = s.encode(ctx, s.project(merged, visible))
+	diags.Append(d...)
+	if diags.HasError() {
+		return accumulated, outputs, diags
+	}
+	call.plan.DetailedOutputs = detailed
+	if call.state != nil {
+		call.plan.ID = call.state.ID
+	} else {
+		call.plan.ID = types.StringValue(s.hash(call.planInputs))
+	}
+	return accumulated, outputs, diags
+}
