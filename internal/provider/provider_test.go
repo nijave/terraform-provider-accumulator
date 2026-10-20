@@ -404,8 +404,8 @@ func expectPlanDetailUnknown(addr, value string) plancheck.PlanCheck {
 }
 
 // sleepPastExpiry is a TestStep.PreConfig that waits out the short
-// expires_after values the expiration tests use (1s), so the next step's
-// plan sees the value as expired.
+// expires_after and delayed_for values the expiry and delay tests use (1s),
+// so the next step's plan sees the value as expired or its reveal as due.
 func sleepPastExpiry() func() {
 	return func() { time.Sleep(2 * time.Second) }
 }

@@ -59,9 +59,10 @@ func TestSetReadFillsNullAccumulated(t *testing.T) {
 	}
 }
 
-// TestMapReadFillsNullAccumulated pins spec section 10 for the map
-// resource: state with accumulated null (hand-edited or minimal) refreshes
-// with accumulated filled from outputs, values intact.
+// TestMapReadFillsNullAccumulated pins section 10 of
+// 2026-10-18-accumulator-map-design.md for the map resource: state with
+// accumulated null (hand-edited or minimal) refreshes with accumulated
+// filled from outputs, values intact.
 func TestMapReadFillsNullAccumulated(t *testing.T) {
 	ctx := context.Background()
 	sch := resourceSchema(t, &mapResource{})
