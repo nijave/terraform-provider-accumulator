@@ -2,6 +2,9 @@
 
 package provider_test
 
+// The expiry and delay behavior tests that hold for every resource live in
+// shared_test.go (TestAccShared); this file keeps only what is specific to the set.
+
 import (
 	"fmt"
 	"testing"

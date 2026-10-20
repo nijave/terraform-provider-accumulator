@@ -212,18 +212,15 @@ func (r *mapResource) Create(ctx context.Context, req resource.CreateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	inputs, d := stringMapFromMap(ctx, plan.Inputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 
 	acc, out, d := applyPhase(ctx, mapShape, applyCall[map[string]string, types.Map]{
 		plan:            &plan.coreModel,
 		planAccumulated: plan.Accumulated,
 		planOutputs:     plan.Outputs,
-		planInputs:      inputs,
-		next:            mapNext(inputs),
+		decodeInputs: func(ctx context.Context) (map[string]string, nextFunc[map[string]string], diag.Diagnostics) {
+			in, d := stringMapFromMap(ctx, plan.Inputs)
+			return in, mapNext(in), d
+		},
 	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -289,9 +286,6 @@ func (r *mapResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	planInputs, d := stringMapFromMap(ctx, plan.Inputs)
-	resp.Diagnostics.Append(d...)
-
 	acc, out, d := applyPhase(ctx, mapShape, applyCall[map[string]string, types.Map]{
 		plan:             &plan.coreModel,
 		planAccumulated:  plan.Accumulated,
@@ -299,8 +293,10 @@ func (r *mapResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		state:            &state.coreModel,
 		stateAccumulated: state.Accumulated,
 		stateOutputs:     state.Outputs,
-		planInputs:       planInputs,
-		next:             mapNext(planInputs),
+		decodeInputs: func(ctx context.Context) (map[string]string, nextFunc[map[string]string], diag.Diagnostics) {
+			in, d := stringMapFromMap(ctx, plan.Inputs)
+			return in, mapNext(in), d
+		},
 	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -323,13 +319,16 @@ func (r *mapResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *res
 func (r *mapResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	_, seeded, outputs, detailed, d := importPhase(ctx, mapShape, req.ID)
 	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	inputs, d := mapFromStringMap(ctx, map[string]string{})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &mapResourceModel{
-		coreModel:   importedCore(detailed, accumulate.HashMapID(seeded)),
+		coreModel:   importedCore(detailed, mapShape.hash(seeded)),
 		Inputs:      inputs,
 		Accumulated: outputs,
 		Outputs:     outputs,

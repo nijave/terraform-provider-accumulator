@@ -118,3 +118,49 @@ func TestModifyPlanNullInputElementWithUnknownBranchInput(t *testing.T) {
 		})
 	}
 }
+
+// TestSetUpdateReportsEveryDecodeError pins that applyPhase appends the
+// planned-inputs decode error and the prior-state stamp error together, as
+// planPhase does, rather than stopping at the first.
+func TestSetUpdateReportsEveryDecodeError(t *testing.T) {
+	ctx := context.Background()
+	res := &setResource{}
+	sch := resourceSchema(t, res)
+	str := tftypes.String
+	detailType := tftypes.Object{AttributeTypes: map[string]tftypes.Type{"expires_at": str, "visible_at": str}}
+	detailed := tftypes.NewValue(tftypes.Map{ElementType: detailType}, map[string]tftypes.Value{
+		"a": tftypes.NewValue(detailType, map[string]tftypes.Value{
+			"expires_at": tftypes.NewValue(str, "not-a-timestamp"),
+			"visible_at": tftypes.NewValue(str, nil),
+		}),
+	})
+	listType := tftypes.List{ElementType: str}
+	setType := tftypes.Set{ElementType: str}
+	set := tftypes.NewValue(setType, []tftypes.Value{tftypes.NewValue(str, "a")})
+	raw := func(inputs tftypes.Value) tftypes.Value {
+		return tftypes.NewValue(sch.Type().TerraformType(ctx), map[string]tftypes.Value{
+			"triggers_reset":       tftypes.NewValue(str, nil),
+			"triggers_replacement": tftypes.NewValue(str, nil),
+			"expires_after":        tftypes.NewValue(tftypes.Number, nil),
+			"delayed_for":          tftypes.NewValue(tftypes.Number, nil),
+			"detailed_outputs":     detailed,
+			"id":                   tftypes.NewValue(str, "x"),
+			"inputs":               inputs,
+			"accumulated":          set,
+			"outputs":              set,
+		})
+	}
+	planInputs := tftypes.NewValue(listType, []tftypes.Value{tftypes.NewValue(str, nil)})
+	stateInputs := tftypes.NewValue(listType, []tftypes.Value{tftypes.NewValue(str, "a")})
+
+	req := resource.UpdateRequest{
+		Plan:  tfsdk.Plan{Raw: raw(planInputs), Schema: sch},
+		State: tfsdk.State{Raw: raw(stateInputs), Schema: sch},
+	}
+	resp := resource.UpdateResponse{State: tfsdk.State{Raw: raw(stateInputs), Schema: sch}}
+	res.Update(ctx, req, &resp)
+
+	if got := resp.Diagnostics.ErrorsCount(); got < 2 {
+		t.Fatalf("got %d error diagnostics, want the inputs and the stamp error: %+v", got, resp.Diagnostics)
+	}
+}

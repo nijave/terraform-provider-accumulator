@@ -207,18 +207,15 @@ func (r *setResource) Create(ctx context.Context, req resource.CreateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	inputs, d := stringsFromList(ctx, plan.Inputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 
 	acc, out, d := applyPhase(ctx, setShape, applyCall[[]string, types.Set]{
 		plan:            &plan.coreModel,
 		planAccumulated: plan.Accumulated,
 		planOutputs:     plan.Outputs,
-		planInputs:      inputs,
-		next:            setNext(inputs),
+		decodeInputs: func(ctx context.Context) ([]string, nextFunc[[]string], diag.Diagnostics) {
+			in, d := stringsFromList(ctx, plan.Inputs)
+			return in, setNext(in), d
+		},
 	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -284,9 +281,6 @@ func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	planInputs, d := stringsFromList(ctx, plan.Inputs)
-	resp.Diagnostics.Append(d...)
-
 	acc, out, d := applyPhase(ctx, setShape, applyCall[[]string, types.Set]{
 		plan:             &plan.coreModel,
 		planAccumulated:  plan.Accumulated,
@@ -294,8 +288,10 @@ func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		state:            &state.coreModel,
 		stateAccumulated: state.Accumulated,
 		stateOutputs:     state.Outputs,
-		planInputs:       planInputs,
-		next:             setNext(planInputs),
+		decodeInputs: func(ctx context.Context) ([]string, nextFunc[[]string], diag.Diagnostics) {
+			in, d := stringsFromList(ctx, plan.Inputs)
+			return in, setNext(in), d
+		},
 	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -322,13 +318,16 @@ func (r *setResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *res
 func (r *setResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	_, seeded, outputs, detailed, d := importPhase(ctx, setShape, req.ID)
 	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	inputs, d := listFromStrings(ctx, []string{})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &setResourceModel{
-		coreModel:   importedCore(detailed, accumulate.HashID(seeded)),
+		coreModel:   importedCore(detailed, setShape.hash(seeded)),
 		Inputs:      inputs,
 		Accumulated: outputs,
 		Outputs:     outputs,

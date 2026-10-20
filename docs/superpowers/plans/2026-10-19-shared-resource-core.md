@@ -4,7 +4,7 @@
 
 **Goal:** Two stacked refactors with no behavior change. Part A replaces the three parallel expiry and delay acceptance suites with one table-driven matrix that runs every identity-level row against `accumulator_list`, `accumulator_set`, and `accumulator_map`. Part B moves the phase glue that the three resources copy (the ModifyPlan guards and branch decision, Read's cull and reveal, the Create/Update known and fallback paths, the import tail) into one shared core, so each resource keeps only its schema, its model, and thin method bodies.
 
-**Architecture:** Part A adds `internal/provider/shared_test.go`: a `flavor` adapter per resource (config renderer, address, a `values` renderer that turns a canonical identity list into the right `knownvalue` check, and an import-ID renderer) and a `sharedCase` table that `TestAccShared` runs as `TestAccShared/<row>/<flavor>`. Rows write expected collections in list semantics (order and duplicates kept); the set and map flavors deduplicate, and the map flavor pairs every key with the value `"1"`. Part B adds `internal/provider/core.go`: an embedded `coreModel` with the six shared attributes; a `shape[C, V]` value per resource that holds closures only (decode, encode, keys, project, hash, parse) and never touches a model; and four phase functions, `planPhase`, `applyPhase`, `readPhase`, and `importPhase`, that take the shared `*coreModel` plus the resource's collections and return encoded values for the resource to assign. The pure functions in `internal/accumulate` and the compositions in `stamps.go` (`planStamps`, `applyStamps`, `applyFallback`) are called with the same arguments in the same order as today.
+**Architecture:** Part A adds `internal/provider/shared_test.go`: a `flavor` adapter per resource (config renderer, address, a `values` renderer that turns a canonical identity list into the right `knownvalue` check, and an import-ID renderer) and a `sharedCase` table that `TestAccShared` runs as `TestAccShared/<flavor>/<row>`. Rows write expected collections in list semantics (order and duplicates kept); the set and map flavors deduplicate, and the map flavor pairs every key with the value `"1"`. Part B adds `internal/provider/core.go`: an embedded `coreModel` with the six shared attributes; a `shape[C, V]` value per resource that holds closures only (decode, encode, keys, project, hash, parse) and never touches a model; and four phase functions, `planPhase`, `applyPhase`, `readPhase`, and `importPhase`, that take the shared `*coreModel` plus the resource's collections and return encoded values for the resource to assign. The pure functions in `internal/accumulate` and the compositions in `stamps.go` (`planStamps`, `applyStamps`, `applyFallback`) are called with the same arguments in the same order as today.
 
 **Tech Stack:** Go 1.26, terraform-plugin-framework v1.19 (embedded structs in `tfsdk` models are supported by value, including unexported ones), terraform-plugin-testing v1.16, OpenTofu >= 1.10 for acceptance tests (`make testacc`), `tools/gen-schema.sh` and `make docs` (OpenTofu >= 1.11 on PATH).
 
@@ -907,8 +907,8 @@ type sharedCase struct {
 }
 
 // TestAccShared runs every expiry and delay behavior that depends only on
-// identity against all three resources, one subtest per row and flavor:
-// TestAccShared/<row>/<flavor>. Behavior that depends on the collection
+// identity against all three resources, one subtest per flavor and row:
+// TestAccShared/<flavor>/<row>. Behavior that depends on the collection
 // type (list order, length, and duplicates; set deduplication; map value
 // overwrite; import shapes) stays in the per-resource files.
 func TestAccShared(t *testing.T) {
@@ -1470,7 +1470,7 @@ var expiryCases = []sharedCase{
 - [ ] **Step 2: Run the new rows before deleting anything**
 
 Run: `make testacc TESTARGS='-run TestAccShared'`
-Expected: 48 leaf subtests pass (16 rows × 3 flavors), for example `--- PASS: TestAccShared/ExpiresAfterDecreasePullsEarlier/map`; final line `ok`. If a row fails for one flavor only, the flavor adapter is wrong, not the row: compare the failing check against the source test named in the inventory.
+Expected: 48 leaf subtests pass (16 rows × 3 flavors), for example `--- PASS: TestAccShared/map/ExpiresAfterDecreasePullsEarlier`; final line `ok`. If a row fails for one flavor only, the flavor adapter is wrong, not the row: compare the failing check against the source test named in the inventory.
 
 - [ ] **Step 3: Delete the migrated expiry tests from resource_list_test.go**
 
@@ -1502,7 +1502,7 @@ The review's section 7 gap: no map test changed `expires_after` between steps, s
 
 ```bash
 sed -i '0,/args.PriorExpires = int64Ptr(state.ExpiresAfter)/s//args.PriorExpires = int64Ptr(plan.ExpiresAfter)/' internal/provider/resource_map.go
-make testacc TESTARGS='-run "TestAccShared/(ExpiresAfterDecreasePullsEarlier|ExpiresAfterIncreaseKeepsLive)/map"' 2>&1 | grep -E '^\s*--- (PASS|FAIL)'
+make testacc TESTARGS='-run "TestAccShared/map/(ExpiresAfterDecreasePullsEarlier|ExpiresAfterIncreaseKeepsLive)"' 2>&1 | grep -E '^\s*--- (PASS|FAIL)'
 git checkout -- internal/provider/resource_map.go
 ```
 
@@ -1510,10 +1510,9 @@ Expected before the checkout:
 
 ```
 --- FAIL: TestAccShared
-    --- FAIL: TestAccShared/ExpiresAfterDecreasePullsEarlier
-        --- FAIL: TestAccShared/ExpiresAfterDecreasePullsEarlier/map
-    --- FAIL: TestAccShared/ExpiresAfterIncreaseKeepsLive
-        --- FAIL: TestAccShared/ExpiresAfterIncreaseKeepsLive/map
+    --- FAIL: TestAccShared/map
+        --- FAIL: TestAccShared/map/ExpiresAfterDecreasePullsEarlier
+        --- FAIL: TestAccShared/map/ExpiresAfterIncreaseKeepsLive
 ```
 
 Then confirm `git status --short internal/provider/resource_map.go` prints nothing.
@@ -1915,7 +1914,7 @@ var delayCases = []sharedCase{
 
 - [ ] **Step 3: Run the new rows before deleting anything**
 
-Run: `make testacc TESTARGS='-run "TestAccShared/(CreateWithDelayedFor|OutputsKnownAtPlanTimeWithDelayedFor|RevealRealizedOnRefresh|DelayedFor|PendingLeaverStamped|ResetDelaysSeed|UnknownDelayedForAtPlan|ImportThenDelayedFor)"'`
+Run: `make testacc TESTARGS='-run "TestAccShared/[^/]+/(CreateWithDelayedFor|OutputsKnownAtPlanTimeWithDelayedFor|RevealRealizedOnRefresh|DelayedFor|PendingLeaverStamped|ResetDelaysSeed|UnknownDelayedForAtPlan|ImportThenDelayedFor)"'`
 Expected: 36 leaf subtests pass (12 rows × 3 flavors); final line `ok`.
 
 - [ ] **Step 4: Delete the migrated delay tests**
@@ -3646,7 +3645,7 @@ Expected: no `gofmt` output; `ok` for both packages. Every `plan:` line of `Test
 
 - [ ] **Step 6: Run the plan-heavy acceptance tests**
 
-Run: `make testacc TESTARGS='-run "OutputsKnownAtPlanTime|OutputsUnknownWhenInputsUnknown|FeedsFrom|FeedsAnother|TestAccShared/(LeaverStamped|ExpiresAfter|Unknown|ResetClearsStamps|ReplacementClearsStamps)"'`
+Run: `make testacc TESTARGS='-run "OutputsKnownAtPlanTime|OutputsUnknownWhenInputsUnknown|FeedsFrom|FeedsAnother|TestAccShared/[^/]+/(LeaverStamped|ExpiresAfter|Unknown|ResetClearsStamps|ReplacementClearsStamps)"'`
 Expected: every listed test passes; final line `ok`.
 
 - [ ] **Step 7: Commit**
@@ -4141,7 +4140,7 @@ Expected: no `gofmt` output; `ok` for both packages. Every `import` section of `
 
 - [ ] **Step 4: Run the import acceptance tests**
 
-Run: `make testacc TESTARGS='-run Import' && make testacc TESTARGS='-run TestAccShared/Import'`
+Run: `make testacc TESTARGS='-run Import' && make testacc TESTARGS='-run TestAccShared/[^/]+/Import'`
 Expected: both runs end with `ok`. The first runs the 8 tests in `import_test.go` with all 10 `TestAccImportMalformed` subtests; the second runs `ImportThenExpiresAfter` and `ImportThenDelayedFor` for all three flavors. (They are separate runs because `-run` applies the part after `/` to every matched test's subtests, which would filter out the malformed-import cases.)
 
 - [ ] **Step 5: Commit**
