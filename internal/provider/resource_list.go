@@ -26,7 +26,8 @@ var (
 
 // listResource accumulates inputs across applies, keeping the most recent
 // length entries. State is the only store, so Delete is a no-op and Read
-// only ever removes expired values.
+// only removes expired values and reveals values whose delayed_for has
+// passed.
 type listResource struct{}
 
 // NewListResource returns the accumulator_list resource.
@@ -34,8 +35,9 @@ func NewListResource() resource.Resource {
 	return &listResource{}
 }
 
-// priorAccumulated reads the store from state: accumulated, or outputs
-// when state predates the attribute (spec section 9).
+// priorAccumulated reads the store from state: accumulated, or outputs when
+// state predates the attribute (2026-10-15-accumulator-delayed-for-design.md
+// section 9).
 func (m listResourceModel) priorAccumulated(ctx context.Context) ([]string, diag.Diagnostics) {
 	if m.Accumulated.IsNull() {
 		return stringsFromList(ctx, m.Outputs)
@@ -180,9 +182,10 @@ func (r *listResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 	}
 }
 
-// ValidateConfig is spec C1 on raw configuration: delayed_for must be
-// strictly less than expires_after when both are known. Unknown values
-// skip the check here; ModifyPlan repeats it once they resolve.
+// ValidateConfig is 2026-10-15-accumulator-delayed-for-design.md C1 on raw
+// configuration: delayed_for must be strictly less than expires_after when both
+// are known. Unknown values skip the check here; ModifyPlan repeats it once
+// they resolve.
 func (r *listResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var config listResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
@@ -196,12 +199,13 @@ func (r *listResource) ValidateConfig(ctx context.Context, req resource.Validate
 // replacement, which is what makes triggers_replacement reseed.
 //
 // Known path: ModifyPlan already computed accumulated, outputs,
-// detailed_outputs, and the id without reading the clock (spec section 6);
-// membership is realized verbatim and only the fresh visible_at entries
-// are resolved with the apply clock, which is what keeps the applied value
-// identical to the planned one. Fallback path (unknown branch inputs at
-// plan time): create is the reseed case, every value comes from inputs,
-// and both stamps come from the apply clock through applyFallback.
+// detailed_outputs, and the id without reading the clock
+// (2026-10-15-accumulator-delayed-for-design.md section 6); membership is
+// realized verbatim and only the fresh visible_at entries are resolved with the
+// apply clock, which is what keeps the applied value identical to the planned
+// one. Fallback path (unknown branch inputs at plan time): create is the reseed
+// case, every value comes from inputs, and both stamps come from the apply
+// clock through applyFallback.
 func (r *listResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan listResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -216,7 +220,8 @@ func (r *listResource) Create(ctx context.Context, req resource.CreateRequest, r
 	}
 
 	// Create is the reseed case: no prior store, no prior stamps, so every
-	// value enters (spec T4) and the only clock use is stamping visible_at.
+	// value enters (2026-10-15-accumulator-delayed-for-design.md T4) and the
+	// only clock use is stamping visible_at.
 	args := stampArgs{
 		PlanInputs:     inputs,
 		PlannedExpires: int64Ptr(plan.ExpiresAfter),
@@ -258,7 +263,8 @@ func (r *listResource) Create(ctx context.Context, req resource.CreateRequest, r
 // the plan shows concrete values and downstream resources can plan against
 // them. It runs the same accumulation algorithm as Create and Update, through
 // the same accumulate.NextListOutputs call, so the planned value cannot
-// disagree with the applied one. It reads no clock (spec section 6): fresh
+// disagree with the applied one. It reads no clock
+// (2026-10-15-accumulator-delayed-for-design.md section 6): fresh
 // detailed_outputs entries plan as unknown and the apply stamps them. When any
 // value the branch decision depends on is still unknown, outputs is left
 // unknown and the apply resolves it.
@@ -341,15 +347,17 @@ func (r *listResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRe
 	merged := accumulate.NextListOutputs(reseed, inputsChanged, planInputs, priorAccumulated,
 		int(plan.Length.ValueInt64()))
 
-	// A reseed discards history: no prior store and no prior stamps, so
-	// every value enters with a full delay window (spec T4).
+	// A reseed discards history: no prior store and no prior stamps, so every
+	// value enters with a full delay window
+	// (2026-10-15-accumulator-delayed-for-design.md T4).
 	if !reseed {
 		args.PriorAccumulated = priorAccumulated
 		args.Prior = prior
 	}
 
-	// No clock here (spec section 6): refresh already culled and revealed,
-	// so membership is a pure function of state and configuration.
+	// No clock here (2026-10-15-accumulator-delayed-for-design.md section 6):
+	// refresh already culled and revealed, so membership is a pure function of
+	// state and configuration.
 	outputs, detailed, d := planStamps(ctx, merged, args)
 	resp.Diagnostics.Append(d...)
 	acc, d := listFromStrings(ctx, merged)
@@ -372,11 +380,12 @@ func (r *listResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRe
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
-// Read culls expired values and reveals due ones: the refresh-time half of
-// both designs. Read cannot see configuration, so both decisions run on
-// stored stamps alone. It writes state only when a value was dropped or
-// revealed, or when state predates accumulated and needs it filled from
-// outputs (spec section 9), which keeps the plan after a refresh empty.
+// Read culls expired values and reveals due ones: the refresh-time half of both
+// designs. Read cannot see configuration, so both decisions run on stored
+// stamps alone. It writes state only when a value was dropped or revealed, or
+// when state predates accumulated and needs it filled from outputs
+// (2026-10-15-accumulator-delayed-for-design.md section 9), which keeps the
+// plan after a refresh empty.
 func (r *listResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state listResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -415,13 +424,14 @@ func (r *listResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Update realizes the plan. On the known path every time-dependent decision
-// was already made by ModifyPlan (membership and keeper stamps), so Update
-// reproduces them through the same pure functions and resolves only the
-// fresh entries (unknown in the plan) with the apply clock (spec section 6).
-// The fallback path runs only when the plan is unknown (unknown branch
-// inputs at plan time), where the plan promised unknown and Update is free
-// to decide with the apply clock through applyFallback.
+// Update realizes the plan. On the known path every time-dependent decision was
+// already made by ModifyPlan (membership and keeper stamps), so Update
+// reproduces them through the same pure functions and resolves only the fresh
+// entries (unknown in the plan) with the apply clock
+// (2026-10-15-accumulator-delayed-for-design.md section 6). The fallback path
+// runs only when the plan is unknown (unknown branch inputs at plan time),
+// where the plan promised unknown and Update is free to decide with the apply
+// clock through applyFallback.
 //
 // triggers_replacement is never inspected here: a change to it plans a
 // replacement, and Update is not called.

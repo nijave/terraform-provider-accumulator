@@ -106,7 +106,8 @@ type stamps struct {
 
 // maxExpiresAfter is the largest expires_after (seconds) that can be added
 // to a time.Time without the time.Duration conversion overflowing: about
-// 292 years. Both resources check `expires_after` and `delayed_for` against it.
+// 292 years. Every resource checks `expires_after` and `delayed_for` against
+// it.
 const maxExpiresAfter = int64(math.MaxInt64 / int64(time.Second))
 
 // clockNow is the one clock choke point for both the plan-time and
@@ -133,7 +134,8 @@ func int64Ptr(v types.Int64) *int64 {
 // the pure functions take. A null or unknown map (state written before
 // the attribute existed) yields empty maps; an entry whose attribute is
 // null, unknown, or absent (state written before visible_at existed,
-// spec section 9) contributes no stamp. Both maps are non-nil.
+// 2026-10-15-accumulator-delayed-for-design.md section 9) contributes no
+// stamp. Both maps are non-nil.
 func stampsFromMap(ctx context.Context, m types.Map) (stamps, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	out := stamps{

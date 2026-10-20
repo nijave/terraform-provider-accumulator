@@ -21,8 +21,8 @@ output "recent_deploys" {
 }
 ```
 
-Each apply that changes `inputs` appends the new value; the list keeps only the
-most recent `length` entries.
+Each apply that changes `inputs` appends the whole new `inputs` list; the list
+keeps only the most recent `length` entries.
 
 ## Requirements
 
