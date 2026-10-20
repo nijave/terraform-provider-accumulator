@@ -522,7 +522,7 @@ func (r *setResource) ImportState(ctx context.Context, req resource.ImportStateR
 	// {"outputs":["a","a","b"]} then yields the same id as
 	// {"outputs":["a","b"]}, matching the state it produces
 	// (2026-09-17-terraform-provider-accumulator-design.md section 8).
-	merged := accumulate.Merge(nil, seed.Outputs)
+	merged := accumulate.Union(nil, seed.Outputs)
 	outputs, d := setFromStrings(ctx, merged)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {

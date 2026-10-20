@@ -65,7 +65,7 @@ func TestSetFromStringsIsNeverNull(t *testing.T) {
 
 // TestSetFromStringsRequiresUniqueValues pins the framework behavior the
 // resources depend on: a duplicate is a diagnostic, not a silent collapse.
-// Every caller passes accumulate.Merge's output, which is unique by
+// Every caller passes accumulate.Union's output, which is unique by
 // construction, so the diagnostic is unreachable in practice and is a bug
 // signal if it ever appears.
 func TestSetFromStringsRequiresUniqueValues(t *testing.T) {

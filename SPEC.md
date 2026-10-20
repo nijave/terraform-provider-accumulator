@@ -1,5 +1,7 @@
 The accumulator provider provides Terraform resources that allow "accumulating" input over time. This is useful if you want a declarative "current" version of something while also being able to maintain a fixed history length without using systems external to Terraform.
 
+This is the original specification. The resource documentation under `docs/resources/` is authoritative for attributes added after it was written (`expires_after`, `delayed_for`, `accumulated`).
+
 This provider defines resources
 
 ```hcl
@@ -41,7 +43,25 @@ resource "accumulator_set" "historical_set" {
 }
 ```
 
-Both resources are imported with a JSON object seed since there is no external system to discover them from. Recognized keys are `inputs` and `outputs`; anything else is an error.
+```hcl
+resource "accumulator_map" "last_value" {
+  # Remembers the most recent value for every key it has seen
+
+  # Required map[string]string
+  inputs = { service = "digest" }
+
+  # Optional[string], should reset the map to "inputs" when this changes
+  triggers_reset = null
+  # Optional[string], forces replacement (destroy and recreate) when this value changes; the new resource is seeded from "inputs"
+  triggers_replacement = null
+
+  # Outputs
+  # outputs map[string]string: The latest value for every key ever seen. Supplying a key again overwrites its value in place
+  # id string: A hash of the inputs present when the resource was created; stable across updates, recomputed on replacement
+}
+```
+
+All three resources are imported with a JSON object seed since there is no external system to discover them from. Recognized keys are `inputs` and `outputs`; anything else is an error.
 
 ```sh
 # accumulator_list: seeds inputs and outputs; id hashes the seeded inputs
@@ -49,4 +69,7 @@ tofu import accumulator_list.historical_list '{"inputs":["a","b"],"outputs":["a"
 
 # accumulator_set: seeds outputs (deduplicated); id hashes the seeded outputs
 tofu import accumulator_set.historical_set '{"outputs":["a","b"]}'
+
+# accumulator_map: seeds outputs (an object of strings); id hashes the seeded outputs
+tofu import accumulator_map.last_value '{"outputs":{"service":"digest"}}'
 ```

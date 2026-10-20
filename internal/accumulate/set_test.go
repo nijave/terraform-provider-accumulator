@@ -40,7 +40,7 @@ func TestNextSetOutputs(t *testing.T) {
 	}
 }
 
-func TestMerge(t *testing.T) {
+func TestUnion(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]struct {
@@ -61,12 +61,12 @@ func TestMerge(t *testing.T) {
 		tc := tc
 		t.Run(label, func(t *testing.T) {
 			t.Parallel()
-			got := Merge(tc.outputs, tc.inputs)
+			got := Union(tc.outputs, tc.inputs)
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("Merge(%v, %v) = %v, want %v", tc.outputs, tc.inputs, got, tc.want)
+				t.Fatalf("Union(%v, %v) = %v, want %v", tc.outputs, tc.inputs, got, tc.want)
 			}
 			if got == nil {
-				t.Fatal("Merge returned nil; it must always return a non-nil slice")
+				t.Fatal("Union returned nil; it must always return a non-nil slice")
 			}
 		})
 	}

@@ -2,14 +2,14 @@
 
 package accumulate
 
-// Merge returns the union of outputs and inputs, first occurrence wins, with a
+// Union returns the union of outputs and inputs, first occurrence wins, with a
 // stable order so the value written to state is deterministic. A nil or empty
 // input yields an empty (non-nil) slice.
 //
 // It is idempotent: applying it whenever the resource is updated is correct
 // whether or not the inputs changed, which removes the need for the resource to
 // compare planned inputs against state.
-func Merge(outputs, inputs []string) []string {
+func Union(outputs, inputs []string) []string {
 	merged := make([]string, 0, len(outputs)+len(inputs))
 	seen := make(map[string]struct{}, len(outputs)+len(inputs))
 
@@ -36,7 +36,7 @@ func Merge(outputs, inputs []string) []string {
 // Create and Update produce the same outputs for both.
 func NextSetOutputs(reseed bool, planInputs, stateOutputs []string) []string {
 	if reseed {
-		return Merge(nil, planInputs)
+		return Union(nil, planInputs)
 	}
-	return Merge(stateOutputs, planInputs)
+	return Union(stateOutputs, planInputs)
 }
