@@ -305,10 +305,10 @@ type applyCall[C any, V attr.Value] struct {
 	// stateAccumulated and stateOutputs are the prior collections; ignored
 	// for Create.
 	stateAccumulated, stateOutputs V
-	// planInputs is the decoded planned inputs.
-	planInputs C
-	// next computes the next accumulated value.
-	next nextFunc[C]
+	// decodeInputs decodes the planned inputs and binds them into the
+	// accumulation step. applyPhase calls it first, so an input that cannot
+	// decode fails before the clock is read or anything is written.
+	decodeInputs func(ctx context.Context) (planInputs C, next nextFunc[C], diags diag.Diagnostics)
 }
 
 // applyPhase is the shared body of Create and Update. Create runs it with a
@@ -331,25 +331,29 @@ type applyCall[C any, V attr.Value] struct {
 // time), the plan promised unknown, and the apply decides membership and
 // both stamps with its own clock through applyFallback.
 func applyPhase[C any, V attr.Value](ctx context.Context, s shape[C, V], call applyCall[C, V]) (accumulated, outputs V, diags diag.Diagnostics) {
+	planInputs, next, d := call.decodeInputs(ctx)
+	diags.Append(d...)
+
 	var prior C
 	var priorStamps stamps
 	reseed := true
 	if call.state != nil {
-		var d diag.Diagnostics
 		prior, d = priorAccumulated(ctx, s, call.stateAccumulated, call.stateOutputs)
 		diags.Append(d...)
 		priorStamps, d = stampsFromMap(ctx, call.state.DetailedOutputs)
 		diags.Append(d...)
-		if diags.HasError() {
-			return accumulated, outputs, diags
-		}
 		reseed = !call.plan.TriggersReset.Equal(call.state.TriggersReset)
+	}
+	// One check after every decode, so a double failure reports both, and
+	// before the clock is read.
+	if diags.HasError() {
+		return accumulated, outputs, diags
 	}
 	var priorKeys []string
 	if !reseed {
 		priorKeys = s.keys(prior)
 	}
-	args := newStampArgs(s.keys(call.planInputs), call.plan, call.state, priorKeys, priorStamps, reseed)
+	args := newStampArgs(s.keys(planInputs), call.plan, call.state, priorKeys, priorStamps, reseed)
 	now := clockNow()
 
 	if !call.planOutputs.IsUnknown() && !call.planAccumulated.IsUnknown() && !call.plan.DetailedOutputs.IsUnknown() {
@@ -367,7 +371,7 @@ func applyPhase[C any, V attr.Value](ctx context.Context, s shape[C, V], call ap
 		return call.planAccumulated, call.planOutputs, diags
 	}
 
-	merged := call.next(reseed, prior)
+	merged := next(reseed, prior)
 	survivors, visible, detailed, d := applyFallback(ctx, s.keys(merged), args, now)
 	diags.Append(d...)
 	accumulated, d = s.encode(ctx, s.project(merged, survivors))
@@ -381,7 +385,7 @@ func applyPhase[C any, V attr.Value](ctx context.Context, s shape[C, V], call ap
 	if call.state != nil {
 		call.plan.ID = call.state.ID
 	} else {
-		call.plan.ID = types.StringValue(s.hash(call.planInputs))
+		call.plan.ID = types.StringValue(s.hash(planInputs))
 	}
 	return accumulated, outputs, diags
 }

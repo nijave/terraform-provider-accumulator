@@ -212,18 +212,15 @@ func (r *mapResource) Create(ctx context.Context, req resource.CreateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	inputs, d := stringMapFromMap(ctx, plan.Inputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 
 	acc, out, d := applyPhase(ctx, mapShape, applyCall[map[string]string, types.Map]{
 		plan:            &plan.coreModel,
 		planAccumulated: plan.Accumulated,
 		planOutputs:     plan.Outputs,
-		planInputs:      inputs,
-		next:            mapNext(inputs),
+		decodeInputs: func(ctx context.Context) (map[string]string, nextFunc[map[string]string], diag.Diagnostics) {
+			in, d := stringMapFromMap(ctx, plan.Inputs)
+			return in, mapNext(in), d
+		},
 	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -289,9 +286,6 @@ func (r *mapResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	planInputs, d := stringMapFromMap(ctx, plan.Inputs)
-	resp.Diagnostics.Append(d...)
-
 	acc, out, d := applyPhase(ctx, mapShape, applyCall[map[string]string, types.Map]{
 		plan:             &plan.coreModel,
 		planAccumulated:  plan.Accumulated,
@@ -299,8 +293,10 @@ func (r *mapResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		state:            &state.coreModel,
 		stateAccumulated: state.Accumulated,
 		stateOutputs:     state.Outputs,
-		planInputs:       planInputs,
-		next:             mapNext(planInputs),
+		decodeInputs: func(ctx context.Context) (map[string]string, nextFunc[map[string]string], diag.Diagnostics) {
+			in, d := stringMapFromMap(ctx, plan.Inputs)
+			return in, mapNext(in), d
+		},
 	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {

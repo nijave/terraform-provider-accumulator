@@ -208,18 +208,15 @@ func (r *listResource) Create(ctx context.Context, req resource.CreateRequest, r
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	inputs, d := stringsFromList(ctx, plan.Inputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 
 	acc, out, d := applyPhase(ctx, listShape, applyCall[[]string, types.List]{
 		plan:            &plan.coreModel,
 		planAccumulated: plan.Accumulated,
 		planOutputs:     plan.Outputs,
-		planInputs:      inputs,
-		next:            listNext(inputs, false, int(plan.Length.ValueInt64())),
+		decodeInputs: func(ctx context.Context) ([]string, nextFunc[[]string], diag.Diagnostics) {
+			in, d := stringsFromList(ctx, plan.Inputs)
+			return in, listNext(in, false, int(plan.Length.ValueInt64())), d
+		},
 	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -288,8 +285,6 @@ func (r *listResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	planInputs, d := stringsFromList(ctx, plan.Inputs)
-	resp.Diagnostics.Append(d...)
 	inputsChanged := !plan.Inputs.Equal(state.Inputs)
 
 	acc, out, d := applyPhase(ctx, listShape, applyCall[[]string, types.List]{
@@ -299,8 +294,10 @@ func (r *listResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		state:            &state.coreModel,
 		stateAccumulated: state.Accumulated,
 		stateOutputs:     state.Outputs,
-		planInputs:       planInputs,
-		next:             listNext(planInputs, inputsChanged, int(plan.Length.ValueInt64())),
+		decodeInputs: func(ctx context.Context) ([]string, nextFunc[[]string], diag.Diagnostics) {
+			in, d := stringsFromList(ctx, plan.Inputs)
+			return in, listNext(in, inputsChanged, int(plan.Length.ValueInt64())), d
+		},
 	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
