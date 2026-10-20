@@ -29,3 +29,23 @@ func HashID(values []string) string {
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
 }
+
+// HashMapID is HashID for a map: the lowercase hex SHA-256 of the canonical
+// JSON object encoding of values. encoding/json sorts object keys, so two
+// maps with the same entries hash the same regardless of insertion order. A
+// nil map is normalized to an empty one first, so it hashes "{}" rather than
+// JSON null.
+func HashMapID(values map[string]string) string {
+	if values == nil {
+		values = map[string]string{}
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		// json.Marshal of a map[string]string has no error path. Keeping the
+		// branch means a future change to the value type cannot silently hash
+		// empty bytes.
+		panic(fmt.Sprintf("accumulate: hashing %T: %v", values, err))
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}

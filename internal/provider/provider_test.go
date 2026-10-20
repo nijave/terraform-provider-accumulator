@@ -94,7 +94,7 @@ func TestProviderSchema(t *testing.T) {
 	if resp.Provider == nil {
 		t.Fatal("GetProviderSchema returned no provider schema")
 	}
-	for _, name := range []string{"accumulator_list", "accumulator_set"} {
+	for _, name := range []string{"accumulator_list", "accumulator_set", "accumulator_map"} {
 		rs, ok := resp.ResourceSchemas[name]
 		if !ok {
 			t.Errorf("provider did not register resource %q", name)
@@ -134,8 +134,11 @@ func TestProviderSchema(t *testing.T) {
 		}
 		accumulated, ok := attrs["accumulated"]
 		wantAccumulated := tftypes.Type(tftypes.Set{ElementType: tftypes.String})
-		if name == "accumulator_list" {
+		switch name {
+		case "accumulator_list":
 			wantAccumulated = tftypes.List{ElementType: tftypes.String}
+		case "accumulator_map":
+			wantAccumulated = tftypes.Map{ElementType: tftypes.String}
 		}
 		switch {
 		case !ok:
@@ -144,6 +147,26 @@ func TestProviderSchema(t *testing.T) {
 			t.Errorf("%s: accumulated must be Computed only, got %+v", name, accumulated)
 		case !accumulated.Type.Is(wantAccumulated):
 			t.Errorf("%s: accumulated type = %s, want %s", name, accumulated.Type, wantAccumulated)
+		}
+		outputs, ok := attrs["outputs"]
+		switch {
+		case !ok:
+			t.Errorf("%s: missing outputs attribute", name)
+		case !outputs.Computed || outputs.Optional || outputs.Required:
+			t.Errorf("%s: outputs must be Computed only, got %+v", name, outputs)
+		case !outputs.Type.Is(wantAccumulated):
+			t.Errorf("%s: outputs type = %s, want %s", name, outputs.Type, wantAccumulated)
+		}
+		if name == "accumulator_map" {
+			inputs, ok := attrs["inputs"]
+			switch {
+			case !ok:
+				t.Errorf("%s: missing inputs attribute", name)
+			case !inputs.Required || inputs.Optional || inputs.Computed:
+				t.Errorf("%s: inputs must be Required only, got %+v", name, inputs)
+			case !inputs.Type.Is(tftypes.Map{ElementType: tftypes.String}):
+				t.Errorf("%s: inputs type = %s, want map(string)", name, inputs.Type)
+			}
 		}
 	}
 }

@@ -49,3 +49,48 @@ func TestHashIDOrderMatters(t *testing.T) {
 		t.Fatal("HashID is order-insensitive; it must hash the list as written")
 	}
 }
+
+func TestHashMapID(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		values map[string]string
+		want   string
+	}{
+		"nil normalizes to an empty object": {
+			nil,
+			"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", // sha256("{}")
+		},
+		"empty map": {
+			map[string]string{},
+			"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", // sha256("{}")
+		},
+		"one entry": {
+			map[string]string{"a": "1"},
+			"9afeb0f2b203f254312ec8ded441d0318b7c34c57f8695ede42d2215a30c0960", // sha256(`{"a":"1"}`)
+		},
+		"two entries": {
+			map[string]string{"b": "1", "a": "1"},
+			"40239544dc03c3ec3a09cb947c72123697428a72af96b1c63431f34a46517709", // sha256(`{"a":"1","b":"1"}`)
+		},
+	}
+
+	for label, tc := range cases {
+		tc := tc
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			if got := HashMapID(tc.values); got != tc.want {
+				t.Fatalf("HashMapID(%v) = %q, want %q", tc.values, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHashMapIDDiffersFromKeyList pins that a map hashes its JSON object,
+// not its key list: {"a":"1"} and ["a"] must not collide.
+func TestHashMapIDDiffersFromKeyList(t *testing.T) {
+	t.Parallel()
+	if HashMapID(map[string]string{"a": "1"}) == HashID([]string{"a"}) {
+		t.Fatal("HashMapID collides with HashID of the key list")
+	}
+}

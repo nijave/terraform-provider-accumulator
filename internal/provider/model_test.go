@@ -476,3 +476,94 @@ func resourceSchema(t *testing.T, r resource.Resource) schema.Schema {
 	}
 	return resp.Schema
 }
+
+func TestMapFromStringMapIsNeverNull(t *testing.T) {
+	t.Parallel()
+
+	for label, values := range map[string]map[string]string{
+		"nil":    nil,
+		"empty":  {},
+		"values": {"a": "1", "b": ""},
+	} {
+		values := values
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			got, diags := mapFromStringMap(context.Background(), values)
+			if diags.HasError() {
+				t.Fatalf("mapFromStringMap: %v", diags.Errors())
+			}
+			if got.IsNull() {
+				t.Fatal("mapFromStringMap produced a null map; state must always hold a concrete value")
+			}
+			if got.IsUnknown() {
+				t.Fatal("mapFromStringMap produced an unknown map")
+			}
+			if got.ElementType(context.Background()) != types.StringType {
+				t.Fatalf("element type = %v, want string", got.ElementType(context.Background()))
+			}
+		})
+	}
+}
+
+func TestStringMapFromMapRoundTrip(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	want := map[string]string{"a": "1", "b": ""}
+	m, diags := mapFromStringMap(ctx, want)
+	if diags.HasError() {
+		t.Fatalf("mapFromStringMap: %v", diags.Errors())
+	}
+	got, diags := stringMapFromMap(ctx, m)
+	if diags.HasError() {
+		t.Fatalf("stringMapFromMap: %v", diags.Errors())
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip = %v, want %v", got, want)
+	}
+}
+
+func TestStringMapFromMapNullAndUnknownAreNil(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for label, m := range map[string]types.Map{
+		"null":    types.MapNull(types.StringType),
+		"unknown": types.MapUnknown(types.StringType),
+	} {
+		m := m
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			got, diags := stringMapFromMap(ctx, m)
+			if diags.HasError() {
+				t.Fatalf("stringMapFromMap: %v", diags.Errors())
+			}
+			if got != nil {
+				t.Fatalf("stringMapFromMap(%s) = %v, want nil", label, got)
+			}
+		})
+	}
+}
+
+func TestMapContainsUnknown(t *testing.T) {
+	t.Parallel()
+	known := types.MapValueMust(types.StringType, map[string]attr.Value{"a": types.StringValue("1")})
+	partial := types.MapValueMust(types.StringType, map[string]attr.Value{
+		"a": types.StringValue("1"), "b": types.StringUnknown(),
+	})
+	for label, tc := range map[string]struct {
+		m    types.Map
+		want bool
+	}{
+		"known":           {known, false},
+		"null":            {types.MapNull(types.StringType), false},
+		"whole unknown":   {types.MapUnknown(types.StringType), true},
+		"element unknown": {partial, true},
+	} {
+		tc := tc
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			if got := mapContainsUnknown(tc.m); got != tc.want {
+				t.Fatalf("mapContainsUnknown = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
