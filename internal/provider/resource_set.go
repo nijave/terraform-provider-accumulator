@@ -310,41 +310,25 @@ func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, re
 func (r *setResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
 }
 
-// ImportState seeds the set from a JSON object. outputs is deduplicated and
-// id hashes the seeded outputs. inputs is seeded as an empty list rather than
-// null: it is a required attribute, and an empty list is a valid non-null
-// value, so nothing depends on tolerating a null required attribute in
-// imported state. The next plan sets inputs from configuration and Update
-// unions it into the seeded outputs. An inputs key in the ID is accepted and
-// ignored.
+// ImportState seeds the set from a JSON object through importPhase. outputs
+// is deduplicated and id hashes the deduplicated outputs, not the raw seed:
+// a seed such as {"outputs":["a","a","b"]} then yields the same id as
+// {"outputs":["a","b"]}, matching the state it produces
+// (2026-09-17-terraform-provider-accumulator-design.md section 8). inputs is
+// seeded as an empty list rather than null: it is a required attribute, and
+// an empty list is a valid non-null value, so nothing depends on tolerating
+// a null required attribute in imported state. The next plan sets inputs
+// from configuration and Update unions it into the seeded outputs.
 func (r *setResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	seed, err := accumulate.ParseImport(req.ID)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid import ID", err.Error())
-		return
-	}
-
+	_, seeded, outputs, detailed, d := importPhase(ctx, setShape, req.ID)
+	resp.Diagnostics.Append(d...)
 	inputs, d := listFromStrings(ctx, []string{})
 	resp.Diagnostics.Append(d...)
-	// Hash the deduplicated outputs, not the raw seed: a seed such as
-	// {"outputs":["a","a","b"]} then yields the same id as
-	// {"outputs":["a","b"]}, matching the state it produces
-	// (2026-09-17-terraform-provider-accumulator-design.md section 8).
-	merged := accumulate.Union(nil, seed.Outputs)
-	outputs, d := setFromStrings(ctx, merged)
-	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	detailed, d := mapFromStamps(ctx, merged, stamps{})
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &setResourceModel{
-		coreModel:   importedCore(detailed, accumulate.HashID(merged)),
+		coreModel:   importedCore(detailed, accumulate.HashID(seeded)),
 		Inputs:      inputs,
 		Accumulated: outputs,
 		Outputs:     outputs,

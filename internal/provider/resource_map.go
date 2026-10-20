@@ -315,30 +315,19 @@ func (r *mapResource) Update(ctx context.Context, req resource.UpdateRequest, re
 func (r *mapResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
 }
 
-// ImportState seeds the map from a JSON object. id hashes the seeded
-// outputs. inputs is seeded as an empty map rather than null: it is a
-// required attribute, and an empty map is a valid non-null value. The next
-// plan sets inputs from configuration and Update merges it into the seeded
-// outputs. An inputs key in the ID is accepted and ignored.
+// ImportState seeds the map from a JSON object through importPhase. id
+// hashes the seeded outputs. inputs is seeded as an empty map rather than
+// null: it is a required attribute, and an empty map is a valid non-null
+// value. The next plan sets inputs from configuration and Update merges it
+// into the seeded outputs.
 func (r *mapResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	seed, err := accumulate.ParseMapImport(req.ID)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid import ID", err.Error())
-		return
-	}
-
+	_, seeded, outputs, detailed, d := importPhase(ctx, mapShape, req.ID)
+	resp.Diagnostics.Append(d...)
 	inputs, d := mapFromStringMap(ctx, map[string]string{})
-	resp.Diagnostics.Append(d...)
-	// ParseMapImport returns a fresh, non-nil map, so no defensive copy is needed.
-	seeded := seed.Outputs
-	outputs, d := mapFromStringMap(ctx, seeded)
-	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, accumulate.SortedKeys(seeded), stamps{})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &mapResourceModel{
 		coreModel:   importedCore(detailed, accumulate.HashMapID(seeded)),
 		Inputs:      inputs,

@@ -385,3 +385,23 @@ func applyPhase[C any, V attr.Value](ctx context.Context, s shape[C, V], call ap
 	}
 	return accumulated, outputs, diags
 }
+
+// importPhase parses an import ID with s.parse and builds the imported
+// collection: accumulated and outputs both hold the seeded outputs, and
+// detailed_outputs has an all-null entry per key (2026-09-23 expiry spec
+// section 8). It returns the seed so the resource can encode its inputs and
+// choose what the id hashes. A parse error becomes the "Invalid import ID"
+// diagnostic, whose detail names the expected shape and quotes the
+// offending key only.
+func importPhase[C any, V attr.Value](ctx context.Context, s shape[C, V], id string) (inputs, seeded C, collection V, detailed types.Map, diags diag.Diagnostics) {
+	inputs, seeded, err := s.parse(id)
+	if err != nil {
+		diags.AddError("Invalid import ID", err.Error())
+		return inputs, seeded, collection, detailed, diags
+	}
+	collection, d := s.encode(ctx, seeded)
+	diags.Append(d...)
+	detailed, d = mapFromStamps(ctx, s.keys(seeded), stamps{})
+	diags.Append(d...)
+	return inputs, seeded, collection, detailed, diags
+}

@@ -315,35 +315,22 @@ func (r *listResource) Update(ctx context.Context, req resource.UpdateRequest, r
 func (r *listResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
 }
 
-// ImportState seeds the resource from a JSON object. length, triggers_reset,
-// and triggers_replacement are left null: length is required configuration, so
-// the next plan fills it in and Update re-trims the seeded outputs. Seeding
-// inputs is what lets a matching configuration produce an empty plan instead of
-// appending the configured list a second time.
+// ImportState seeds the resource from a JSON object through importPhase.
+// length, triggers_reset, and triggers_replacement are left null: length is
+// required configuration, so the next plan fills it in and Update re-trims
+// the seeded outputs. Seeding inputs is what lets a matching configuration
+// produce an empty plan instead of appending the configured list a second
+// time, and id hashes the seeded inputs.
 func (r *listResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	seed, err := accumulate.ParseImport(req.ID)
-	if err != nil {
-		// The error names the expected shape and quotes the offending key only.
-		resp.Diagnostics.AddError("Invalid import ID", err.Error())
-		return
-	}
-
-	inputs, d := listFromStrings(ctx, seed.Inputs)
+	seedInputs, _, outputs, detailed, d := importPhase(ctx, listShape, req.ID)
 	resp.Diagnostics.Append(d...)
-	outputs, d := listFromStrings(ctx, seed.Outputs)
+	inputs, d := listFromStrings(ctx, seedInputs)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	detailed, d := mapFromStamps(ctx, seed.Outputs, stamps{})
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &listResourceModel{
-		coreModel:   importedCore(detailed, accumulate.HashID(seed.Inputs)),
+		coreModel:   importedCore(detailed, accumulate.HashID(seedInputs)),
 		Inputs:      inputs,
 		Length:      types.Int64Null(),
 		Accumulated: outputs,
