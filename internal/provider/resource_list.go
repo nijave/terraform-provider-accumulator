@@ -321,13 +321,16 @@ func (r *listResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *re
 func (r *listResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	seedInputs, _, outputs, detailed, d := importPhase(ctx, listShape, req.ID)
 	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	inputs, d := listFromStrings(ctx, seedInputs)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &listResourceModel{
-		coreModel:   importedCore(detailed, accumulate.HashID(seedInputs)),
+		coreModel:   importedCore(detailed, listShape.hash(seedInputs)),
 		Inputs:      inputs,
 		Length:      types.Int64Null(),
 		Accumulated: outputs,

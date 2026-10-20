@@ -319,13 +319,16 @@ func (r *mapResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *res
 func (r *mapResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	_, seeded, outputs, detailed, d := importPhase(ctx, mapShape, req.ID)
 	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	inputs, d := mapFromStringMap(ctx, map[string]string{})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &mapResourceModel{
-		coreModel:   importedCore(detailed, accumulate.HashMapID(seeded)),
+		coreModel:   importedCore(detailed, mapShape.hash(seeded)),
 		Inputs:      inputs,
 		Accumulated: outputs,
 		Outputs:     outputs,

@@ -398,12 +398,14 @@ func applyPhase[C any, V attr.Value](ctx context.Context, s shape[C, V], call ap
 // diagnostic, whose detail names the expected shape and quotes the
 // offending key only.
 func importPhase[C any, V attr.Value](ctx context.Context, s shape[C, V], id string) (inputs, seeded C, collection V, detailed types.Map, diags diag.Diagnostics) {
-	inputs, seeded, err := s.parse(id)
+	var err error
+	inputs, seeded, err = s.parse(id)
 	if err != nil {
 		diags.AddError("Invalid import ID", err.Error())
 		return inputs, seeded, collection, detailed, diags
 	}
-	collection, d := s.encode(ctx, seeded)
+	var d diag.Diagnostics
+	collection, d = s.encode(ctx, seeded)
 	diags.Append(d...)
 	detailed, d = mapFromStamps(ctx, s.keys(seeded), stamps{})
 	diags.Append(d...)
