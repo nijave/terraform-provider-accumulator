@@ -163,9 +163,6 @@ func hclMap(ids []string) string {
 
 // jsonArray renders identities as a JSON array of strings.
 func jsonArray(ids []string) string {
-	if ids == nil {
-		ids = []string{}
-	}
 	encoded, err := json.Marshal(ids)
 	if err != nil {
 		panic(err)
@@ -173,8 +170,8 @@ func jsonArray(ids []string) string {
 	return string(encoded)
 }
 
-// ids is shorthand for an identity list in a row.
-func ids(values ...string) []string { return values }
+// idList is shorthand for an identity list in a row.
+func idList(values ...string) []string { return values }
 
 // unknownSource is an upstream resource whose outputs are never known at
 // plan time (uuid), so any attribute derived from it is unknown in the plan
@@ -195,18 +192,23 @@ type sharedCase struct {
 }
 
 // TestAccShared runs every expiry and delay behavior that depends only on
-// identity against all three resources, one subtest per row and flavor:
-// TestAccShared/<row>/<flavor>. Behavior that depends on the collection
+// identity against all three resources, one subtest per flavor and row:
+// TestAccShared/<flavor>/<row>. Select with -run:
+//
+//	-run TestAccShared                                  the whole matrix
+//	-run 'TestAccShared/set'                            every set row
+//	-run 'TestAccShared/set/CreateWithExpiresAfter'     one row of one flavor
+//	-run 'TestAccShared/[^/]+/ImportThenDelayedFor'     one row, every flavor
+//
+// Behavior that depends on the collection
 // type (list order, length, and duplicates; set deduplication; map value
 // overwrite; import shapes) stays in the per-resource files.
 func TestAccShared(t *testing.T) {
-	for _, group := range sharedGroups {
-		for _, tc := range group {
-			tc := tc
-			t.Run(tc.name, func(t *testing.T) {
-				for _, f := range flavors {
-					f := f
-					t.Run(f.name, func(t *testing.T) {
+	for _, f := range flavors {
+		t.Run(f.name, func(t *testing.T) {
+			for _, group := range sharedGroups {
+				for _, tc := range group {
+					t.Run(tc.name, func(t *testing.T) {
 						resource.Test(t, resource.TestCase{
 							PreCheck:                 func() { testAccPreCheck(t) },
 							ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -214,8 +216,8 @@ func TestAccShared(t *testing.T) {
 						})
 					})
 				}
-			})
-		}
+			}
+		})
 	}
 }
 
@@ -229,7 +231,7 @@ var expiryCases = []sharedCase{
 	// fully known at plan time and all null.
 	{"CreateWithExpiresAfter", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{{
-			Config: f.config(ids("a", "b"), `  expires_after = 3600`),
+			Config: f.config(idList("a", "b"), `  expires_after = 3600`),
 			ConfigPlanChecks: resource.ConfigPlanChecks{
 				PreApply: []plancheck.PlanCheck{
 					f.expectPlanOutputs("a", "b"),
@@ -254,12 +256,12 @@ var expiryCases = []sharedCase{
 	{"LeaverStampedOnInputsChange", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a", "b"), `  expires_after = 3600`),
+				Config:            f.config(idList("a", "b"), `  expires_after = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b")},
 				ConfigPlanChecks:  expectEmptyAfterRefresh(),
 			},
 			{
-				Config: f.config(ids("a"), `  expires_after = 3600`),
+				Config: f.config(idList("a"), `  expires_after = 3600`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs("a", "b", "a"),
@@ -284,11 +286,11 @@ var expiryCases = []sharedCase{
 	{"ExpiryRealizedOnRefresh", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a", "b"), `  expires_after = 1`),
+				Config:            f.config(idList("a", "b"), `  expires_after = 1`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b")},
 			},
 			{
-				Config: f.config(ids("a"), `  expires_after = 1`),
+				Config: f.config(idList("a"), `  expires_after = 1`),
 				ConfigStateChecks: []statecheck.StateCheck{
 					f.expectOutputs("a", "b", "a"),
 					expectDetailed(f.addr, map[string]knownvalue.Check{
@@ -297,7 +299,7 @@ var expiryCases = []sharedCase{
 				},
 			},
 			{
-				Config:    f.config(ids("a"), `  expires_after = 1`),
+				Config:    f.config(idList("a"), `  expires_after = 1`),
 				PreConfig: sleepPastExpiry(),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					// The refresh culls b before the plan, so the plan
@@ -320,11 +322,11 @@ var expiryCases = []sharedCase{
 	{"InInputsNeverExpires", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a"), `  expires_after = 1`),
+				Config:            f.config(idList("a"), `  expires_after = 1`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a")},
 			},
 			{
-				Config:    f.config(ids("a"), `  expires_after = 1`),
+				Config:    f.config(idList("a"), `  expires_after = 1`),
 				PreConfig: sleepPastExpiry(),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -343,7 +345,7 @@ var expiryCases = []sharedCase{
 	{"ExpiresAfterSetOnExistingResource", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config: f.config(ids("a", "b"), ""),
+				Config: f.config(idList("a", "b"), ""),
 				ConfigStateChecks: []statecheck.StateCheck{
 					f.expectOutputs("a", "b"),
 					expectDetailed(f.addr, map[string]knownvalue.Check{
@@ -353,7 +355,7 @@ var expiryCases = []sharedCase{
 				ConfigPlanChecks: expectEmptyAfterRefresh(),
 			},
 			{
-				Config: f.config(ids("a"), `  expires_after = 3600`),
+				Config: f.config(idList("a"), `  expires_after = 3600`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs("a", "b", "a"),
@@ -377,15 +379,15 @@ var expiryCases = []sharedCase{
 	{"ExpiresAfterRemoved", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a", "b"), `  expires_after = 3600`),
+				Config:            f.config(idList("a", "b"), `  expires_after = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b")},
 			},
 			{
-				Config:            f.config(ids("a"), `  expires_after = 3600`),
+				Config:            f.config(idList("a"), `  expires_after = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b", "a")},
 			},
 			{
-				Config: f.config(ids("a"), ""),
+				Config: f.config(idList("a"), ""),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						// T2 removes nothing: b survives the removal of
@@ -409,15 +411,15 @@ var expiryCases = []sharedCase{
 	{"ExpiresAfterZeroCullsNextRefresh", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a", "b"), `  expires_after = 3600`),
+				Config:            f.config(idList("a", "b"), `  expires_after = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b")},
 			},
 			{
-				Config:            f.config(ids("a"), `  expires_after = 3600`),
+				Config:            f.config(idList("a"), `  expires_after = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b", "a")},
 			},
 			{
-				Config: f.config(ids("a"), `  expires_after = 0`),
+				Config: f.config(idList("a"), `  expires_after = 0`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs("a", "b", "a"),
@@ -438,7 +440,7 @@ var expiryCases = []sharedCase{
 				},
 			},
 			{
-				Config: f.config(ids("a"), `  expires_after = 0`),
+				Config: f.config(idList("a"), `  expires_after = 0`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					// The refresh culls b before the plan.
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -457,15 +459,15 @@ var expiryCases = []sharedCase{
 	{"ExpiresAfterDecreasePullsEarlier", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a", "b"), `  expires_after = 3600`),
+				Config:            f.config(idList("a", "b"), `  expires_after = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b")},
 			},
 			{
-				Config:            f.config(ids("a"), `  expires_after = 3600`),
+				Config:            f.config(idList("a"), `  expires_after = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b", "a")},
 			},
 			{
-				Config: f.config(ids("a"), `  expires_after = 1`),
+				Config: f.config(idList("a"), `  expires_after = 1`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs("a", "b", "a"),
@@ -484,7 +486,7 @@ var expiryCases = []sharedCase{
 				},
 			},
 			{
-				Config:    f.config(ids("a"), `  expires_after = 1`),
+				Config:    f.config(idList("a"), `  expires_after = 1`),
 				PreConfig: sleepPastExpiry(),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					// The refresh culls b before the plan, so the plan
@@ -507,15 +509,15 @@ var expiryCases = []sharedCase{
 	{"IncreaseDoesNotResurrect", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a", "b"), `  expires_after = 3600`),
+				Config:            f.config(idList("a", "b"), `  expires_after = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b")},
 			},
 			{
-				Config:            f.config(ids("a"), `  expires_after = 1`),
+				Config:            f.config(idList("a"), `  expires_after = 1`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b", "a")},
 			},
 			{
-				Config:    f.config(ids("a"), `  expires_after = 3600`),
+				Config:    f.config(idList("a"), `  expires_after = 3600`),
 				PreConfig: sleepPastExpiry(),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					// b was culled at refresh; the plan only shows a.
@@ -555,7 +557,7 @@ var expiryCases = []sharedCase{
 		}
 		return []resource.TestStep{
 			{
-				Config: f.config(ids("a", "b"), `  expires_after = 300`),
+				Config: f.config(idList("a", "b"), `  expires_after = 300`),
 				ConfigStateChecks: []statecheck.StateCheck{
 					f.expectOutputs("a", "b"),
 					expectDetailed(f.addr, map[string]knownvalue.Check{
@@ -565,7 +567,7 @@ var expiryCases = []sharedCase{
 				ConfigPlanChecks: expectEmptyAfterRefresh(),
 			},
 			{
-				Config: f.config(ids("a"), `  expires_after = 300`),
+				Config: f.config(idList("a"), `  expires_after = 300`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply:             leaverPlan(),
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -575,7 +577,7 @@ var expiryCases = []sharedCase{
 			{
 				// b survives the increase and is re-stamped, so it is still
 				// present and its entry is unknown until the apply.
-				Config: f.config(ids("a"), `  expires_after = 3600`),
+				Config: f.config(idList("a"), `  expires_after = 3600`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply:             leaverPlan(),
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -592,15 +594,15 @@ var expiryCases = []sharedCase{
 	{"ReSupplyRescues", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a", "b"), `  expires_after = 3600`),
+				Config:            f.config(idList("a", "b"), `  expires_after = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b")},
 			},
 			{
-				Config:            f.config(ids("a"), `  expires_after = 1`),
+				Config:            f.config(idList("a"), `  expires_after = 1`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b", "a")},
 			},
 			{
-				Config:    f.config(ids("a", "b"), `  expires_after = 1`),
+				Config:    f.config(idList("a", "b"), `  expires_after = 1`),
 				PreConfig: sleepPastExpiry(),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
@@ -626,11 +628,11 @@ var expiryCases = []sharedCase{
 	{"ResetClearsStamps", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a", "b"), "  expires_after = 3600\n  triggers_reset = \"v1\""),
+				Config:            f.config(idList("a", "b"), "  expires_after = 3600\n  triggers_reset = \"v1\""),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b")},
 			},
 			{
-				Config: f.config(ids("a"), "  expires_after = 3600\n  triggers_reset = \"v1\""),
+				Config: f.config(idList("a"), "  expires_after = 3600\n  triggers_reset = \"v1\""),
 				ConfigStateChecks: []statecheck.StateCheck{
 					f.expectOutputs("a", "b", "a"),
 					expectDetailed(f.addr, map[string]knownvalue.Check{
@@ -639,7 +641,7 @@ var expiryCases = []sharedCase{
 				},
 			},
 			{
-				Config: f.config(ids("a"), "  expires_after = 3600\n  triggers_reset = \"v2\""),
+				Config: f.config(idList("a"), "  expires_after = 3600\n  triggers_reset = \"v2\""),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs("a"),
@@ -661,15 +663,15 @@ var expiryCases = []sharedCase{
 	{"ReplacementClearsStamps", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a", "b"), "  expires_after = 3600\n  triggers_replacement = \"v1\""),
+				Config:            f.config(idList("a", "b"), "  expires_after = 3600\n  triggers_replacement = \"v1\""),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b")},
 			},
 			{
-				Config:            f.config(ids("a"), "  expires_after = 3600\n  triggers_replacement = \"v1\""),
+				Config:            f.config(idList("a"), "  expires_after = 3600\n  triggers_replacement = \"v1\""),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a", "b", "a")},
 			},
 			{
-				Config: f.config(ids("a"), "  expires_after = 3600\n  triggers_replacement = \"v2\""),
+				Config: f.config(idList("a"), "  expires_after = 3600\n  triggers_replacement = \"v2\""),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(f.addr, plancheck.ResourceActionReplace),
@@ -691,7 +693,7 @@ var expiryCases = []sharedCase{
 	// and the apply resolves them with the apply clock.
 	{"UnknownExpiresAfterAtPlan", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{{
-			Config:             unknownSource + f.config(ids("a"), `  expires_after = length(accumulator_list.src.outputs)`),
+			Config:             unknownSource + f.config(idList("a"), `  expires_after = length(accumulator_list.src.outputs)`),
 			ExpectNonEmptyPlan: true,
 			ConfigPlanChecks: resource.ConfigPlanChecks{
 				PreApply: []plancheck.PlanCheck{
@@ -711,13 +713,13 @@ var expiryCases = []sharedCase{
 	// apply stamps non-inputs values via S5. The list seeds inputs so the
 	// settling apply does not append them again.
 	{"ImportThenExpiresAfter", func(f flavor) []resource.TestStep {
-		config := f.config(ids("a"), `  expires_after = 3600`)
+		config := f.config(idList("a"), `  expires_after = 3600`)
 		return []resource.TestStep{
 			{
 				Config:             config,
 				ResourceName:       f.addr,
 				ImportState:        true,
-				ImportStateId:      f.importID(ids("a"), ids("a", "b")),
+				ImportStateId:      f.importID(idList("a"), idList("a", "b")),
 				ImportStatePersist: true,
 				ImportStateVerify:  false,
 				ImportStateCheck:   importSeedsNullDetails("a", "b"),
@@ -748,7 +750,7 @@ var expiryCases = []sharedCase{
 	// (9223372036) is rejected at plan time by the between-validator.
 	{"ExpiresAfterUpperBound", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{{
-			Config:      f.config(ids("a"), `  expires_after = 10000000000`),
+			Config:      f.config(idList("a"), `  expires_after = 10000000000`),
 			ExpectError: regexp.MustCompile(`value must be between`),
 		}}
 	}},
@@ -762,7 +764,7 @@ var delayCases = []sharedCase{
 	// stamps it. The 3600s window keeps the post-refresh plan empty.
 	{"CreateWithDelayedFor", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{{
-			Config: f.config(ids("a", "b"), `  delayed_for = 3600`),
+			Config: f.config(idList("a", "b"), `  delayed_for = 3600`),
 			ConfigPlanChecks: resource.ConfigPlanChecks{
 				PreApply: []plancheck.PlanCheck{
 					f.expectPlanOutputs(),
@@ -789,11 +791,11 @@ var delayCases = []sharedCase{
 	{"OutputsKnownAtPlanTimeWithDelayedFor", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a"), ""),
+				Config:            f.config(idList("a"), ""),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a")},
 			},
 			{
-				Config: f.config(ids("a", "b"), `  delayed_for = 3600`),
+				Config: f.config(idList("a", "b"), `  delayed_for = 3600`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs("a", "a"),
@@ -811,7 +813,7 @@ var delayCases = []sharedCase{
 				},
 			},
 			{
-				Config: f.config(ids("a", "b"), "  delayed_for = 3600\n  triggers_reset = \"v1\""),
+				Config: f.config(idList("a", "b"), "  delayed_for = 3600\n  triggers_reset = \"v1\""),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs(),
@@ -822,7 +824,7 @@ var delayCases = []sharedCase{
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs(), f.expectAccumulated("a", "b")},
 			},
 			{
-				Config: f.config(ids("a", "b"), "  delayed_for = 3600\n  triggers_reset = \"v1\"\n  triggers_replacement = \"r1\""),
+				Config: f.config(idList("a", "b"), "  delayed_for = 3600\n  triggers_reset = \"v1\"\n  triggers_replacement = \"r1\""),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction(f.addr, plancheck.ResourceActionReplace),
@@ -842,14 +844,14 @@ var delayCases = []sharedCase{
 	{"RevealRealizedOnRefresh", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config: f.config(ids("a"), `  delayed_for = 1`),
+				Config: f.config(idList("a"), `  delayed_for = 1`),
 				ConfigStateChecks: []statecheck.StateCheck{
 					f.expectOutputs(),
 					expectDetailed(f.addr, oneDetail("a", pendingDetail())),
 				},
 			},
 			{
-				Config:    f.config(ids("a"), `  delayed_for = 1`),
+				Config:    f.config(idList("a"), `  delayed_for = 1`),
 				PreConfig: sleepPastExpiry(),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply:             []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -869,11 +871,11 @@ var delayCases = []sharedCase{
 	{"DelayedForRemoved", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a", "b"), `  delayed_for = 3600`),
+				Config:            f.config(idList("a", "b"), `  delayed_for = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs()},
 			},
 			{
-				Config: f.config(ids("a", "b"), ""),
+				Config: f.config(idList("a", "b"), ""),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs("a", "b"),
@@ -899,11 +901,11 @@ var delayCases = []sharedCase{
 	{"DelayedForDecreaseRevealsSooner", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a"), `  delayed_for = 3600`),
+				Config:            f.config(idList("a"), `  delayed_for = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs()},
 			},
 			{
-				Config: f.config(ids("a"), `  delayed_for = 1`),
+				Config: f.config(idList("a"), `  delayed_for = 1`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs(),
@@ -915,7 +917,7 @@ var delayCases = []sharedCase{
 				},
 			},
 			{
-				Config:    f.config(ids("a"), `  delayed_for = 1`),
+				Config:    f.config(idList("a"), `  delayed_for = 1`),
 				PreConfig: sleepPastExpiry(),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -930,11 +932,11 @@ var delayCases = []sharedCase{
 	{"DelayedForIncreaseKeepsPending", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a"), `  delayed_for = 3600`),
+				Config:            f.config(idList("a"), `  delayed_for = 3600`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs()},
 			},
 			{
-				Config: f.config(ids("a"), `  delayed_for = 7200`),
+				Config: f.config(idList("a"), `  delayed_for = 7200`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs(),
@@ -956,7 +958,7 @@ var delayCases = []sharedCase{
 	{"DelayedForZeroRevealsNextRefresh", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config: f.config(ids("a"), `  delayed_for = 0`),
+				Config: f.config(idList("a"), `  delayed_for = 0`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{f.expectPlanOutputs()},
 				},
@@ -968,7 +970,7 @@ var delayCases = []sharedCase{
 				},
 			},
 			{
-				Config: f.config(ids("a"), `  delayed_for = 0`),
+				Config: f.config(idList("a"), `  delayed_for = 0`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply:             []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
 					PostApplyPostRefresh: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
@@ -988,15 +990,15 @@ var delayCases = []sharedCase{
 		c1 := regexp.MustCompile(`delayed_for must be shorter than expires_after`)
 		return []resource.TestStep{
 			{
-				Config:      f.config(ids("a"), "  delayed_for = 10\n  expires_after = 10"),
+				Config:      f.config(idList("a"), "  delayed_for = 10\n  expires_after = 10"),
 				ExpectError: c1,
 			},
 			{
-				Config:      f.config(ids("a"), "  delayed_for = 11\n  expires_after = 10"),
+				Config:      f.config(idList("a"), "  delayed_for = 11\n  expires_after = 10"),
 				ExpectError: c1,
 			},
 			{
-				Config:            f.config(ids("a"), "  delayed_for = 9\n  expires_after = 10"),
+				Config:            f.config(idList("a"), "  delayed_for = 9\n  expires_after = 10"),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectAccumulated("a")},
 			},
 		}
@@ -1007,11 +1009,11 @@ var delayCases = []sharedCase{
 	{"PendingLeaverStamped", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a", "b"), "  delayed_for = 3600\n  expires_after = 7200"),
+				Config:            f.config(idList("a", "b"), "  delayed_for = 3600\n  expires_after = 7200"),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs()},
 			},
 			{
-				Config: f.config(ids("a"), "  delayed_for = 3600\n  expires_after = 7200"),
+				Config: f.config(idList("a"), "  delayed_for = 3600\n  expires_after = 7200"),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs(),
@@ -1035,11 +1037,11 @@ var delayCases = []sharedCase{
 	{"ResetDelaysSeed", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{
 			{
-				Config:            f.config(ids("a"), `  triggers_reset = "v1"`),
+				Config:            f.config(idList("a"), `  triggers_reset = "v1"`),
 				ConfigStateChecks: []statecheck.StateCheck{f.expectOutputs("a")},
 			},
 			{
-				Config: f.config(ids("a"), "  delayed_for = 3600\n  triggers_reset = \"v2\""),
+				Config: f.config(idList("a"), "  delayed_for = 3600\n  triggers_reset = \"v2\""),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						f.expectPlanOutputs(),
@@ -1061,7 +1063,7 @@ var delayCases = []sharedCase{
 	// resolves them with its own clock.
 	{"UnknownDelayedForAtPlan", func(f flavor) []resource.TestStep {
 		return []resource.TestStep{{
-			Config:             unknownSource + f.config(ids("a"), `  delayed_for = length(accumulator_list.src.outputs) * 3600`),
+			Config:             unknownSource + f.config(idList("a"), `  delayed_for = length(accumulator_list.src.outputs) * 3600`),
 			ExpectNonEmptyPlan: true,
 			ConfigPlanChecks: resource.ConfigPlanChecks{
 				PreApply: []plancheck.PlanCheck{
@@ -1078,17 +1080,17 @@ var delayCases = []sharedCase{
 		}}
 	}},
 
-	// D12. Delay spec section 8: imported values seed visible, and the first
-	// new value in the settling apply is delayed. The list seeds no inputs,
-	// so the settling apply appends d.
+	// D12. Delay spec section 8, map spec section 9: imported values seed
+	// visible, and the first new value in the settling apply is delayed. The
+	// list seeds no inputs, so the settling apply appends d.
 	{"ImportThenDelayedFor", func(f flavor) []resource.TestStep {
-		config := f.config(ids("d"), `  delayed_for = 3600`)
+		config := f.config(idList("d"), `  delayed_for = 3600`)
 		return []resource.TestStep{
 			{
 				Config:             config,
 				ResourceName:       f.addr,
 				ImportState:        true,
-				ImportStateId:      f.importID(nil, ids("a", "b")),
+				ImportStateId:      f.importID(nil, idList("a", "b")),
 				ImportStatePersist: true,
 				ImportStateVerify:  false,
 			},
