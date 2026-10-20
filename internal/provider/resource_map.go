@@ -37,14 +37,30 @@ func NewMapResource() resource.Resource {
 	return &mapResource{}
 }
 
-// priorAccumulated reads the store from state: accumulated, or outputs when
-// state lacks it (2026-10-18-accumulator-map-design.md
-// section 10).
-func (m mapResourceModel) priorAccumulated(ctx context.Context) (map[string]string, diag.Diagnostics) {
-	if m.Accumulated.IsNull() {
-		return stringMapFromMap(ctx, m.Outputs)
+// mapShape adapts accumulator_map to the shared phases in core.go. The stamp
+// functions run over the sorted keys, so values never reach them
+// (2026-10-18-accumulator-map-design.md V3: a value change is never an
+// entry), and Project re-attaches the values. Import seeds no inputs; an
+// inputs key in the ID is accepted and ignored.
+var mapShape = shape[map[string]string, types.Map]{
+	decode:  stringMapFromMap,
+	encode:  mapFromStringMap,
+	keys:    accumulate.SortedKeys,
+	project: accumulate.Project,
+	hash:    accumulate.HashMapID,
+	parse: func(id string) (map[string]string, map[string]string, error) {
+		seed, err := accumulate.ParseMapImport(id)
+		return nil, seed.Outputs, err
+	},
+}
+
+// mapNext is accumulator_map's accumulation step: the planned inputs merged
+// over the prior map. Merging is idempotent, so no inputs comparison is
+// needed: merging whenever Create or Update runs is correct.
+func mapNext(planInputs map[string]string) nextFunc[map[string]string] {
+	return func(reseed bool, prior map[string]string) map[string]string {
+		return accumulate.NextMapOutputs(reseed, planInputs, prior)
 	}
-	return stringMapFromMap(ctx, m.Accumulated)
 }
 
 // ValidateConfig is spec C1 on raw configuration: delayed_for must be
@@ -59,17 +75,13 @@ func (r *mapResource) ValidateConfig(ctx context.Context, req resource.ValidateC
 	resp.Diagnostics.Append(checkDelayShorterThanExpiry(config.DelayedFor, config.ExpiresAfter)...)
 }
 
-// mapResourceModel is accumulator_map's state model.
+// mapResourceModel is accumulator_map's state model: the shared attributes
+// plus the three maps.
 type mapResourceModel struct {
-	Inputs              types.Map    `tfsdk:"inputs"`
-	TriggersReset       types.String `tfsdk:"triggers_reset"`
-	TriggersReplacement types.String `tfsdk:"triggers_replacement"`
-	ExpiresAfter        types.Int64  `tfsdk:"expires_after"`
-	DelayedFor          types.Int64  `tfsdk:"delayed_for"`
-	Accumulated         types.Map    `tfsdk:"accumulated"`
-	Outputs             types.Map    `tfsdk:"outputs"`
-	DetailedOutputs     types.Map    `tfsdk:"detailed_outputs"`
-	ID                  types.String `tfsdk:"id"`
+	coreModel
+	Inputs      types.Map `tfsdk:"inputs"`
+	Accumulated types.Map `tfsdk:"accumulated"`
+	Outputs     types.Map `tfsdk:"outputs"`
 }
 
 func (r *mapResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -191,239 +203,85 @@ func (r *mapResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 	}
 }
 
-// Create seeds accumulated from the planned inputs. It also runs after a
-// replacement, which is what makes triggers_replacement reseed.
-//
-// Known path: ModifyPlan already computed accumulated, outputs,
-// detailed_outputs, and the id without reading the clock; membership is
-// realized verbatim and only the fresh visible_at entries are resolved
-// with the apply clock. Fallback path (unknown branch inputs at plan time):
-// create is the reseed case, every key comes from inputs, and both stamps
-// come from the apply clock through applyFallback.
+// Create seeds accumulated from the planned inputs through applyPhase. It
+// also runs after a replacement, which is what makes triggers_replacement
+// reseed.
 func (r *mapResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan mapResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
 	inputs, d := stringMapFromMap(ctx, plan.Inputs)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Create is the reseed case: no prior store, no prior stamps, so every
-	// key enters (2026-10-15-accumulator-delayed-for-design.md T4) and the only
-	// clock use is stamping visible_at.
-	args := stampArgs{
-		PlanInputs:     accumulate.SortedKeys(inputs),
-		PlannedExpires: int64Ptr(plan.ExpiresAfter),
-		PlannedDelay:   int64Ptr(plan.DelayedFor),
-	}
-
-	if !plan.Outputs.IsUnknown() && !plan.Accumulated.IsUnknown() && !plan.DetailedOutputs.IsUnknown() {
-		// Known path: realize membership verbatim and resolve the fresh
-		// visible_at entries with the apply clock.
-		accumulated, d := stringMapFromMap(ctx, plan.Accumulated)
-		resp.Diagnostics.Append(d...)
-		detailed, d := applyStamps(ctx, accumulate.SortedKeys(accumulated), args, clockNow())
-		resp.Diagnostics.Append(d...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		plan.DetailedOutputs = detailed
-		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-		return
-	}
-
-	merged := accumulate.NextMapOutputs(true, inputs, nil)
-	survivors, visible, detailed, d := applyFallback(ctx, accumulate.SortedKeys(merged), args, clockNow())
-	resp.Diagnostics.Append(d...)
-	acc, d := mapFromStringMap(ctx, accumulate.Project(merged, survivors))
-	resp.Diagnostics.Append(d...)
-	out, d := mapFromStringMap(ctx, accumulate.Project(merged, visible))
+	acc, out, d := applyPhase(ctx, mapShape, applyCall[map[string]string, types.Map]{
+		plan:            &plan.coreModel,
+		planAccumulated: plan.Accumulated,
+		planOutputs:     plan.Outputs,
+		planInputs:      inputs,
+		next:            mapNext(inputs),
+	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	plan.Accumulated = acc
-	plan.Outputs = out
-	plan.DetailedOutputs = detailed
-	plan.ID = types.StringValue(accumulate.HashMapID(inputs))
+	plan.Accumulated, plan.Outputs = acc, out
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
-// ModifyPlan writes the outputs the next apply will produce into the plan.
-// It runs the same accumulation algorithm as Create and Update, through the
-// same accumulate.NextMapOutputs call, so the planned value cannot disagree
-// with the applied one. It reads no clock: fresh detailed_outputs entries
-// plan as unknown and the apply stamps them. When any value the branch
-// decision depends on is still unknown, outputs is left unknown and the
-// apply resolves it.
+// ModifyPlan writes the outputs the next apply will produce into the plan
+// through planPhase. Terraform marks unknown map values individually, so an
+// unknown value counts as an unknown branch input; a map whose keys are
+// unknown is wholly unknown.
 func (r *mapResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	// A destroy plan carries no planned state to compute from, and the
-	// framework requires it to stay null.
-	if req.Plan.Raw.IsNull() {
+	var plan, state mapResourceModel
+	creating, ok := readPlanAndState(ctx, req, &plan, &state, &resp.Diagnostics)
+	if !ok || mapContainsUnknown(plan.Inputs) || (!creating && state.Inputs.IsUnknown()) {
 		return
 	}
 
-	var plan mapResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// State is null when the resource is being created, and Get refuses a null
-	// state, so it is only read when there is one to read.
-	creating := req.State.Raw.IsNull()
-
-	var state mapResourceModel
-	if !creating {
-		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-	}
-
-	// An unknown branch input makes the planned outputs unknowable, not merely
-	// unresolved: a triggers_reset that may have changed yields either the
-	// reseeded map or the merged one, and no single planned value can express
-	// that. Leaving outputs untouched keeps the framework's unknown marking in
-	// place until Create or Update resolves the value. Unknown values inside
-	// inputs count too: Terraform marks them individually.
-	if mapContainsUnknown(plan.Inputs) || plan.TriggersReset.IsUnknown() ||
-		plan.TriggersReplacement.IsUnknown() || plan.ExpiresAfter.IsUnknown() ||
-		plan.DelayedFor.IsUnknown() {
-		return
-	}
-	if !creating && (state.Inputs.IsUnknown() || state.Outputs.IsUnknown() ||
-		state.TriggersReset.IsUnknown() || state.TriggersReplacement.IsUnknown() ||
-		state.ExpiresAfter.IsUnknown() || state.DetailedOutputs.IsUnknown() ||
-		state.DelayedFor.IsUnknown() || state.Accumulated.IsUnknown()) {
-		return
-	}
-	resp.Diagnostics.Append(checkDelayShorterThanExpiry(plan.DelayedFor, plan.ExpiresAfter)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	planInputs, d := stringMapFromMap(ctx, plan.Inputs)
+	acc, out, ok, d := planPhase(ctx, mapShape, planCall[map[string]string, types.Map]{
+		creating:         creating,
+		plan:             &plan.coreModel,
+		state:            &state.coreModel,
+		stateAccumulated: state.Accumulated,
+		stateOutputs:     state.Outputs,
+		decodeInputs: func(ctx context.Context) (map[string]string, nextFunc[map[string]string], diag.Diagnostics) {
+			in, d := stringMapFromMap(ctx, plan.Inputs)
+			return in, mapNext(in), d
+		},
+	})
 	resp.Diagnostics.Append(d...)
-	var priorAccumulated map[string]string
-	var prior stamps
-	args := stampArgs{
-		PlanInputs:     accumulate.SortedKeys(planInputs),
-		PlannedExpires: int64Ptr(plan.ExpiresAfter),
-		PlannedDelay:   int64Ptr(plan.DelayedFor),
-	}
-	if !creating {
-		priorAccumulated, d = state.priorAccumulated(ctx)
-		resp.Diagnostics.Append(d...)
-		prior, d = stampsFromMap(ctx, state.DetailedOutputs)
-		resp.Diagnostics.Append(d...)
-		args.PriorExpires = int64Ptr(state.ExpiresAfter)
-		args.PriorDelay = int64Ptr(state.DelayedFor)
-	}
-	if resp.Diagnostics.HasError() {
+	if !ok || resp.Diagnostics.HasError() {
 		return
 	}
-
-	// The branch conditions mirror Update's, with two additions: a null state
-	// means Create runs, and a triggers_replacement change means a replacement
-	// means Create runs. Both seed outputs from the planned inputs alone,
-	// which is what reseed expresses. No inputs comparison is needed, matching
-	// Update: merging is idempotent, so merging whenever Create or Update runs
-	// is correct.
-	replacing := !creating && !plan.TriggersReplacement.Equal(state.TriggersReplacement)
-	reseed := creating || replacing || !plan.TriggersReset.Equal(state.TriggersReset)
-
-	merged := accumulate.NextMapOutputs(reseed, planInputs, priorAccumulated)
-
-	// A reseed discards history: no prior store and no prior stamps, so
-	// every key enters with a full delay window (2026-10-15-accumulator-delayed-for-design.md
-	// T4).
-	if !reseed {
-		args.PriorAccumulated = accumulate.SortedKeys(priorAccumulated)
-		args.Prior = prior
-	}
-
-	// No clock here (2026-10-18-accumulator-map-design.md section
-	// 6): refresh already culled and revealed, so membership is a pure
-	// function of state and configuration.
-	visible, detailed, d := planStamps(ctx, accumulate.SortedKeys(merged), args)
-	resp.Diagnostics.Append(d...)
-	acc, d := mapFromStringMap(ctx, merged)
-	resp.Diagnostics.Append(d...)
-	out, d := mapFromStringMap(ctx, accumulate.Project(merged, visible))
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	plan.Accumulated = acc
-	plan.Outputs = out
-	plan.DetailedOutputs = detailed
-	if creating || replacing {
-		// Create identifies the resource from the planned inputs. An in-place
-		// update keeps the state id; UseStateForUnknown has already resolved
-		// it into the plan by the time ModifyPlan runs.
-		plan.ID = types.StringValue(accumulate.HashMapID(planInputs))
-	}
+	plan.Accumulated, plan.Outputs = acc, out
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
-// Read culls expired keys and reveals due ones: the refresh-time half of
-// both designs. Read cannot see configuration, so both decisions run on
-// stored stamps alone. It writes state only when a key was dropped or
-// revealed, or when state lacks accumulated and needs it filled from
-// outputs, which keeps the plan after a refresh empty.
+// Read culls expired keys and reveals due ones through readPhase. It writes
+// state only when a key was dropped or revealed, or when state lacks
+// accumulated and needs it filled from outputs.
 func (r *mapResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state mapResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	values, d := state.priorAccumulated(ctx)
+	acc, out, changed, d := readPhase(ctx, mapShape, &state.coreModel, state.Accumulated, state.Outputs)
 	resp.Diagnostics.Append(d...)
-	prior, d := stampsFromMap(ctx, state.DetailedOutputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
+	if !changed || resp.Diagnostics.HasError() {
 		return
 	}
-
-	keys := accumulate.SortedKeys(values)
-	now := clockNow()
-	survivors, expires := accumulate.FilterExpired(keys, prior.Expires, now)
-	visible, pending := accumulate.FilterPending(survivors, prior.Visible, now)
-	if !state.Accumulated.IsNull() && len(survivors) == len(keys) && len(pending) == len(prior.Visible) {
-		return
-	}
-
-	acc, d := mapFromStringMap(ctx, accumulate.Project(values, survivors))
-	resp.Diagnostics.Append(d...)
-	out, d := mapFromStringMap(ctx, accumulate.Project(values, visible))
-	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, survivors, stamps{Expires: expires, Visible: pending})
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	state.Accumulated = acc
-	state.Outputs = out
-	state.DetailedOutputs = detailed
+	state.Accumulated, state.Outputs = acc, out
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Update realizes the plan. On the known path every time-dependent decision
-// was already made by ModifyPlan (membership and keeper stamps), so Update
-// reproduces them through the same pure functions and resolves only the
-// fresh entries (unknown in the plan) with the apply clock. The fallback
-// path runs only when the plan is unknown, where the plan promised unknown
-// and Update is free to decide with the apply clock through applyFallback.
+// Update realizes the plan through applyPhase.
 func (r *mapResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state mapResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -431,62 +289,24 @@ func (r *mapResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
 	planInputs, d := stringMapFromMap(ctx, plan.Inputs)
 	resp.Diagnostics.Append(d...)
-	priorAccumulated, d := state.priorAccumulated(ctx)
-	resp.Diagnostics.Append(d...)
-	prior, d := stampsFromMap(ctx, state.DetailedOutputs)
+
+	acc, out, d := applyPhase(ctx, mapShape, applyCall[map[string]string, types.Map]{
+		plan:             &plan.coreModel,
+		planAccumulated:  plan.Accumulated,
+		planOutputs:      plan.Outputs,
+		state:            &state.coreModel,
+		stateAccumulated: state.Accumulated,
+		stateOutputs:     state.Outputs,
+		planInputs:       planInputs,
+		next:             mapNext(planInputs),
+	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	reseed := !plan.TriggersReset.Equal(state.TriggersReset)
-	args := stampArgs{
-		PlanInputs:     accumulate.SortedKeys(planInputs),
-		PriorExpires:   int64Ptr(state.ExpiresAfter),
-		PlannedExpires: int64Ptr(plan.ExpiresAfter),
-		PriorDelay:     int64Ptr(state.DelayedFor),
-		PlannedDelay:   int64Ptr(plan.DelayedFor),
-	}
-	if !reseed {
-		args.PriorAccumulated = accumulate.SortedKeys(priorAccumulated)
-		args.Prior = prior
-	}
-	now := clockNow()
-
-	if !plan.Outputs.IsUnknown() && !plan.Accumulated.IsUnknown() && !plan.DetailedOutputs.IsUnknown() {
-		// Known path: membership and keeper stamps reproduce exactly through
-		// the pure functions ModifyPlan used; only fresh entries resolve here.
-		accumulated, d := stringMapFromMap(ctx, plan.Accumulated)
-		resp.Diagnostics.Append(d...)
-		detailed, d := applyStamps(ctx, accumulate.SortedKeys(accumulated), args, now)
-		resp.Diagnostics.Append(d...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		plan.DetailedOutputs = detailed
-		plan.ID = state.ID
-		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-		return
-	}
-
-	merged := accumulate.NextMapOutputs(reseed, planInputs, priorAccumulated)
-	survivors, visible, detailed, d := applyFallback(ctx, accumulate.SortedKeys(merged), args, now)
-	resp.Diagnostics.Append(d...)
-	acc, d := mapFromStringMap(ctx, accumulate.Project(merged, survivors))
-	resp.Diagnostics.Append(d...)
-	out, d := mapFromStringMap(ctx, accumulate.Project(merged, visible))
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	plan.Accumulated = acc
-	plan.Outputs = out
-	plan.DetailedOutputs = detailed
-	plan.ID = state.ID
+	plan.Accumulated, plan.Outputs = acc, out
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -495,39 +315,23 @@ func (r *mapResource) Update(ctx context.Context, req resource.UpdateRequest, re
 func (r *mapResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
 }
 
-// ImportState seeds the map from a JSON object. id hashes the seeded
-// outputs. inputs is seeded as an empty map rather than null: it is a
-// required attribute, and an empty map is a valid non-null value. The next
-// plan sets inputs from configuration and Update merges it into the seeded
-// outputs. An inputs key in the ID is accepted and ignored.
+// ImportState seeds the map from a JSON object through importPhase. id
+// hashes the seeded outputs. inputs is seeded as an empty map rather than
+// null: it is a required attribute, and an empty map is a valid non-null
+// value. The next plan sets inputs from configuration and Update merges it
+// into the seeded outputs.
 func (r *mapResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	seed, err := accumulate.ParseMapImport(req.ID)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid import ID", err.Error())
-		return
-	}
-
+	_, seeded, outputs, detailed, d := importPhase(ctx, mapShape, req.ID)
+	resp.Diagnostics.Append(d...)
 	inputs, d := mapFromStringMap(ctx, map[string]string{})
-	resp.Diagnostics.Append(d...)
-	// ParseMapImport returns a fresh, non-nil map, so no defensive copy is needed.
-	seeded := seed.Outputs
-	outputs, d := mapFromStringMap(ctx, seeded)
-	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, accumulate.SortedKeys(seeded), stamps{})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &mapResourceModel{
-		Inputs:              inputs,
-		TriggersReset:       types.StringNull(),
-		TriggersReplacement: types.StringNull(),
-		ExpiresAfter:        types.Int64Null(),
-		DelayedFor:          types.Int64Null(),
-		Accumulated:         outputs,
-		Outputs:             outputs,
-		DetailedOutputs:     detailed,
-		ID:                  types.StringValue(accumulate.HashMapID(seeded)),
+		coreModel:   importedCore(detailed, accumulate.HashMapID(seeded)),
+		Inputs:      inputs,
+		Accumulated: outputs,
+		Outputs:     outputs,
 	})...)
 }

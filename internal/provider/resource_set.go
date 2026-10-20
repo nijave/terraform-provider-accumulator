@@ -34,14 +34,25 @@ func NewSetResource() resource.Resource {
 	return &setResource{}
 }
 
-// priorAccumulated reads the store from state: accumulated, or outputs when
-// state predates the attribute (2026-10-15-accumulator-delayed-for-design.md
-// section 9).
-func (m setResourceModel) priorAccumulated(ctx context.Context) ([]string, diag.Diagnostics) {
-	if m.Accumulated.IsNull() {
-		return stringsFromSet(ctx, m.Outputs)
+// setShape adapts accumulator_set to the shared phases in core.go: a set of
+// strings is its own identity list. Import deduplicates the seeded outputs
+// and seeds no inputs; an inputs key in the ID is accepted and ignored.
+var setShape = sliceShape(stringsFromSet, setFromStrings,
+	func(id string) ([]string, []string, error) {
+		seed, err := accumulate.ParseImport(id)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, accumulate.Union(nil, seed.Outputs), nil
+	})
+
+// setNext is accumulator_set's accumulation step: a union of the planned
+// inputs into the prior set. Union is idempotent, so no inputs comparison is
+// needed: unioning whenever Create or Update runs is correct.
+func setNext(planInputs []string) nextFunc[[]string] {
+	return func(reseed bool, prior []string) []string {
+		return accumulate.NextSetOutputs(reseed, planInputs, prior)
 	}
-	return stringsFromSet(ctx, m.Accumulated)
 }
 
 // ValidateConfig is 2026-10-15-accumulator-delayed-for-design.md C1 on raw
@@ -57,17 +68,13 @@ func (r *setResource) ValidateConfig(ctx context.Context, req resource.ValidateC
 	resp.Diagnostics.Append(checkDelayShorterThanExpiry(config.DelayedFor, config.ExpiresAfter)...)
 }
 
-// setResourceModel is accumulator_set's state model.
+// setResourceModel is accumulator_set's state model: the shared attributes
+// plus inputs (a list, the shape users write) and the two sets.
 type setResourceModel struct {
-	Inputs              types.List   `tfsdk:"inputs"`
-	TriggersReset       types.String `tfsdk:"triggers_reset"`
-	TriggersReplacement types.String `tfsdk:"triggers_replacement"`
-	ExpiresAfter        types.Int64  `tfsdk:"expires_after"`
-	DelayedFor          types.Int64  `tfsdk:"delayed_for"`
-	Accumulated         types.Set    `tfsdk:"accumulated"`
-	Outputs             types.Set    `tfsdk:"outputs"`
-	DetailedOutputs     types.Map    `tfsdk:"detailed_outputs"`
-	ID                  types.String `tfsdk:"id"`
+	coreModel
+	Inputs      types.List `tfsdk:"inputs"`
+	Accumulated types.Set  `tfsdk:"accumulated"`
+	Outputs     types.Set  `tfsdk:"outputs"`
 }
 
 func (r *setResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -191,246 +198,85 @@ func (r *setResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 	}
 }
 
-// Create seeds accumulated from the planned inputs. It also runs after a
-// replacement, which is what makes triggers_replacement reseed.
-//
-// Known path: ModifyPlan already computed accumulated, outputs,
-// detailed_outputs, and the id without reading the clock
-// (2026-10-15-accumulator-delayed-for-design.md section 6); membership is
-// realized verbatim and only the fresh visible_at entries are resolved with the
-// apply clock, which is what keeps the applied value identical to the planned
-// one. Fallback path (unknown branch inputs at plan time): create is the reseed
-// case, every value comes from inputs, and both stamps come from the apply
-// clock through applyFallback.
+// Create seeds accumulated from the planned inputs through applyPhase. It
+// also runs after a replacement, which is what makes triggers_replacement
+// reseed.
 func (r *setResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan setResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
 	inputs, d := stringsFromList(ctx, plan.Inputs)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Create is the reseed case: no prior store, no prior stamps, so every
-	// value enters (2026-10-15-accumulator-delayed-for-design.md T4) and the
-	// only clock use is stamping visible_at.
-	args := stampArgs{
-		PlanInputs:     inputs,
-		PlannedExpires: int64Ptr(plan.ExpiresAfter),
-		PlannedDelay:   int64Ptr(plan.DelayedFor),
-	}
-
-	if !plan.Outputs.IsUnknown() && !plan.Accumulated.IsUnknown() && !plan.DetailedOutputs.IsUnknown() {
-		// Known path: realize membership verbatim and resolve the fresh
-		// visible_at entries with the apply clock.
-		accumulated, d := stringsFromSet(ctx, plan.Accumulated)
-		resp.Diagnostics.Append(d...)
-		detailed, d := applyStamps(ctx, accumulated, args, clockNow())
-		resp.Diagnostics.Append(d...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		plan.DetailedOutputs = detailed
-		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-		return
-	}
-
-	merged := accumulate.NextSetOutputs(true, inputs, nil)
-	accumulated, outputs, detailed, d := applyFallback(ctx, merged, args, clockNow())
-	resp.Diagnostics.Append(d...)
-	acc, d := setFromStrings(ctx, accumulated)
-	resp.Diagnostics.Append(d...)
-	out, d := setFromStrings(ctx, outputs)
+	acc, out, d := applyPhase(ctx, setShape, applyCall[[]string, types.Set]{
+		plan:            &plan.coreModel,
+		planAccumulated: plan.Accumulated,
+		planOutputs:     plan.Outputs,
+		planInputs:      inputs,
+		next:            setNext(inputs),
+	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	plan.Accumulated = acc
-	plan.Outputs = out
-	plan.DetailedOutputs = detailed
-	plan.ID = types.StringValue(accumulate.HashID(inputs))
+	plan.Accumulated, plan.Outputs = acc, out
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
-// ModifyPlan writes the outputs the next apply will produce into the plan, so
-// the plan shows concrete values and downstream resources can plan against
-// them. It runs the same accumulation algorithm as Create and Update, through
-// the same accumulate.NextSetOutputs call, so the planned value cannot disagree
-// with the applied one. It reads no clock
-// (2026-10-15-accumulator-delayed-for-design.md section 6): fresh
-// detailed_outputs entries plan as unknown and the apply stamps them. When any
-// value the branch decision depends on is still unknown, outputs is left
-// unknown and the apply resolves it.
+// ModifyPlan writes the outputs the next apply will produce into the plan
+// through planPhase. inputs is a list, and Terraform marks unknown list
+// elements individually, so an unknown element counts as an unknown branch
+// input.
 func (r *setResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	// A destroy plan carries no planned state to compute from, and the
-	// framework requires it to stay null.
-	if req.Plan.Raw.IsNull() {
+	var plan, state setResourceModel
+	creating, ok := readPlanAndState(ctx, req, &plan, &state, &resp.Diagnostics)
+	if !ok || listContainsUnknown(plan.Inputs) || (!creating && state.Inputs.IsUnknown()) {
 		return
 	}
 
-	var plan setResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// State is null when the resource is being created, and Get refuses a null
-	// state, so it is only read when there is one to read.
-	creating := req.State.Raw.IsNull()
-
-	var state setResourceModel
-	if !creating {
-		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-	}
-
-	// An unknown branch input makes the planned outputs unknowable, not merely
-	// unresolved: a triggers_reset that may have changed yields either the
-	// reseeded set or the unioned one, and no single planned value can express
-	// that. Leaving outputs untouched keeps the framework's unknown marking in
-	// place until Create or Update resolves the value. Unknown elements inside
-	// inputs count too: Terraform marks them individually.
-	if listContainsUnknown(plan.Inputs) || plan.TriggersReset.IsUnknown() ||
-		plan.TriggersReplacement.IsUnknown() || plan.ExpiresAfter.IsUnknown() ||
-		plan.DelayedFor.IsUnknown() {
-		return
-	}
-	if !creating && (state.Inputs.IsUnknown() || state.Outputs.IsUnknown() ||
-		state.TriggersReset.IsUnknown() || state.TriggersReplacement.IsUnknown() ||
-		state.ExpiresAfter.IsUnknown() || state.DetailedOutputs.IsUnknown() ||
-		state.DelayedFor.IsUnknown() || state.Accumulated.IsUnknown()) {
-		return
-	}
-	resp.Diagnostics.Append(checkDelayShorterThanExpiry(plan.DelayedFor, plan.ExpiresAfter)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	planInputs, d := stringsFromList(ctx, plan.Inputs)
+	acc, out, ok, d := planPhase(ctx, setShape, planCall[[]string, types.Set]{
+		creating:         creating,
+		plan:             &plan.coreModel,
+		state:            &state.coreModel,
+		stateAccumulated: state.Accumulated,
+		stateOutputs:     state.Outputs,
+		decodeInputs: func(ctx context.Context) ([]string, nextFunc[[]string], diag.Diagnostics) {
+			in, d := stringsFromList(ctx, plan.Inputs)
+			return in, setNext(in), d
+		},
+	})
 	resp.Diagnostics.Append(d...)
-	var priorAccumulated []string
-	var prior stamps
-	args := stampArgs{
-		PlanInputs:     planInputs,
-		PlannedExpires: int64Ptr(plan.ExpiresAfter),
-		PlannedDelay:   int64Ptr(plan.DelayedFor),
-	}
-	if !creating {
-		priorAccumulated, d = state.priorAccumulated(ctx)
-		resp.Diagnostics.Append(d...)
-		prior, d = stampsFromMap(ctx, state.DetailedOutputs)
-		resp.Diagnostics.Append(d...)
-		args.PriorExpires = int64Ptr(state.ExpiresAfter)
-		args.PriorDelay = int64Ptr(state.DelayedFor)
-	}
-	if resp.Diagnostics.HasError() {
+	if !ok || resp.Diagnostics.HasError() {
 		return
 	}
-
-	// The branch conditions mirror Update's, with two additions: a null state
-	// means Create runs, and a triggers_replacement change means a replacement
-	// means Create runs. Both seed outputs from the planned inputs alone,
-	// which is what reseed expresses. No inputs comparison is needed, matching
-	// Update: union is idempotent, so unioning whenever Create or Update runs
-	// is correct.
-	replacing := !creating && !plan.TriggersReplacement.Equal(state.TriggersReplacement)
-	reseed := creating || replacing || !plan.TriggersReset.Equal(state.TriggersReset)
-
-	merged := accumulate.NextSetOutputs(reseed, planInputs, priorAccumulated)
-
-	// A reseed discards history: no prior store and no prior stamps, so every
-	// value enters with a full delay window
-	// (2026-10-15-accumulator-delayed-for-design.md T4).
-	if !reseed {
-		args.PriorAccumulated = priorAccumulated
-		args.Prior = prior
-	}
-
-	// No clock here (2026-10-15-accumulator-delayed-for-design.md section 6):
-	// refresh already culled and revealed, so membership is a pure function of
-	// state and configuration.
-	outputs, detailed, d := planStamps(ctx, merged, args)
-	resp.Diagnostics.Append(d...)
-	acc, d := setFromStrings(ctx, merged)
-	resp.Diagnostics.Append(d...)
-	out, d := setFromStrings(ctx, outputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	plan.Accumulated = acc
-	plan.Outputs = out
-	plan.DetailedOutputs = detailed
-	if creating || replacing {
-		// Create identifies the resource from the planned inputs. An in-place
-		// update keeps the state id; UseStateForUnknown has already resolved
-		// it into the plan by the time ModifyPlan runs.
-		plan.ID = types.StringValue(accumulate.HashID(planInputs))
-	}
+	plan.Accumulated, plan.Outputs = acc, out
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
-// Read culls expired values and reveals due ones: the refresh-time half of both
-// designs. Read cannot see configuration, so both decisions run on stored
-// stamps alone. It writes state only when a value was dropped or revealed, or
-// when state predates accumulated and needs it filled from outputs
-// (2026-10-15-accumulator-delayed-for-design.md section 9), which keeps the
-// plan after a refresh empty.
+// Read culls expired values and reveals due ones through readPhase. It
+// writes state only when a value was dropped or revealed, or when state
+// predates accumulated and needs it filled from outputs.
 func (r *setResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state setResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	values, d := state.priorAccumulated(ctx)
+	acc, out, changed, d := readPhase(ctx, setShape, &state.coreModel, state.Accumulated, state.Outputs)
 	resp.Diagnostics.Append(d...)
-	prior, d := stampsFromMap(ctx, state.DetailedOutputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
+	if !changed || resp.Diagnostics.HasError() {
 		return
 	}
-
-	now := clockNow()
-	survivors, expires := accumulate.FilterExpired(values, prior.Expires, now)
-	visible, pending := accumulate.FilterPending(survivors, prior.Visible, now)
-	if !state.Accumulated.IsNull() && len(survivors) == len(values) && len(pending) == len(prior.Visible) {
-		return
-	}
-
-	acc, d := setFromStrings(ctx, survivors)
-	resp.Diagnostics.Append(d...)
-	out, d := setFromStrings(ctx, visible)
-	resp.Diagnostics.Append(d...)
-	detailed, d := mapFromStamps(ctx, survivors, stamps{Expires: expires, Visible: pending})
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	state.Accumulated = acc
-	state.Outputs = out
-	state.DetailedOutputs = detailed
+	state.Accumulated, state.Outputs = acc, out
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Update realizes the plan. On the known path every time-dependent decision was
-// already made by ModifyPlan (membership and keeper stamps), so Update
-// reproduces them through the same pure functions and resolves only the fresh
-// entries (unknown in the plan) with the apply clock
-// (2026-10-15-accumulator-delayed-for-design.md section 6). The fallback path
-// runs only when the plan is unknown (unknown branch inputs at plan time),
-// where the plan promised unknown and Update is free to decide with the apply
-// clock through applyFallback. No inputs comparison is needed: union is
-// idempotent.
+// Update realizes the plan through applyPhase.
 func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state setResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -438,62 +284,24 @@ func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
 	planInputs, d := stringsFromList(ctx, plan.Inputs)
 	resp.Diagnostics.Append(d...)
-	priorAccumulated, d := state.priorAccumulated(ctx)
-	resp.Diagnostics.Append(d...)
-	prior, d := stampsFromMap(ctx, state.DetailedOutputs)
+
+	acc, out, d := applyPhase(ctx, setShape, applyCall[[]string, types.Set]{
+		plan:             &plan.coreModel,
+		planAccumulated:  plan.Accumulated,
+		planOutputs:      plan.Outputs,
+		state:            &state.coreModel,
+		stateAccumulated: state.Accumulated,
+		stateOutputs:     state.Outputs,
+		planInputs:       planInputs,
+		next:             setNext(planInputs),
+	})
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	reseed := !plan.TriggersReset.Equal(state.TriggersReset)
-	args := stampArgs{
-		PlanInputs:     planInputs,
-		PriorExpires:   int64Ptr(state.ExpiresAfter),
-		PlannedExpires: int64Ptr(plan.ExpiresAfter),
-		PriorDelay:     int64Ptr(state.DelayedFor),
-		PlannedDelay:   int64Ptr(plan.DelayedFor),
-	}
-	if !reseed {
-		args.PriorAccumulated = priorAccumulated
-		args.Prior = prior
-	}
-	now := clockNow()
-
-	if !plan.Outputs.IsUnknown() && !plan.Accumulated.IsUnknown() && !plan.DetailedOutputs.IsUnknown() {
-		// Known path: membership and keeper stamps reproduce exactly through
-		// the pure functions ModifyPlan used; only fresh entries resolve here.
-		accumulated, d := stringsFromSet(ctx, plan.Accumulated)
-		resp.Diagnostics.Append(d...)
-		detailed, d := applyStamps(ctx, accumulated, args, now)
-		resp.Diagnostics.Append(d...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		plan.DetailedOutputs = detailed
-		plan.ID = state.ID
-		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-		return
-	}
-
-	merged := accumulate.NextSetOutputs(reseed, planInputs, priorAccumulated)
-	accumulated, outputs, detailed, d := applyFallback(ctx, merged, args, now)
-	resp.Diagnostics.Append(d...)
-	acc, d := setFromStrings(ctx, accumulated)
-	resp.Diagnostics.Append(d...)
-	out, d := setFromStrings(ctx, outputs)
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	plan.Accumulated = acc
-	plan.Outputs = out
-	plan.DetailedOutputs = detailed
-	plan.ID = state.ID
+	plan.Accumulated, plan.Outputs = acc, out
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -502,48 +310,27 @@ func (r *setResource) Update(ctx context.Context, req resource.UpdateRequest, re
 func (r *setResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
 }
 
-// ImportState seeds the set from a JSON object. outputs is deduplicated and
-// id hashes the seeded outputs. inputs is seeded as an empty list rather than
-// null: it is a required attribute, and an empty list is a valid non-null
-// value, so nothing depends on tolerating a null required attribute in
-// imported state. The next plan sets inputs from configuration and Update
-// unions it into the seeded outputs. An inputs key in the ID is accepted and
-// ignored.
+// ImportState seeds the set from a JSON object through importPhase. outputs
+// is deduplicated and id hashes the deduplicated outputs, not the raw seed:
+// a seed such as {"outputs":["a","a","b"]} then yields the same id as
+// {"outputs":["a","b"]}, matching the state it produces
+// (2026-09-17-terraform-provider-accumulator-design.md section 8). inputs is
+// seeded as an empty list rather than null: it is a required attribute, and
+// an empty list is a valid non-null value, so nothing depends on tolerating
+// a null required attribute in imported state. The next plan sets inputs
+// from configuration and Update unions it into the seeded outputs.
 func (r *setResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	seed, err := accumulate.ParseImport(req.ID)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid import ID", err.Error())
-		return
-	}
-
+	_, seeded, outputs, detailed, d := importPhase(ctx, setShape, req.ID)
+	resp.Diagnostics.Append(d...)
 	inputs, d := listFromStrings(ctx, []string{})
 	resp.Diagnostics.Append(d...)
-	// Hash the deduplicated outputs, not the raw seed: a seed such as
-	// {"outputs":["a","a","b"]} then yields the same id as
-	// {"outputs":["a","b"]}, matching the state it produces
-	// (2026-09-17-terraform-provider-accumulator-design.md section 8).
-	merged := accumulate.Union(nil, seed.Outputs)
-	outputs, d := setFromStrings(ctx, merged)
-	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	detailed, d := mapFromStamps(ctx, merged, stamps{})
-	resp.Diagnostics.Append(d...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &setResourceModel{
-		Inputs:              inputs,
-		TriggersReset:       types.StringNull(),
-		TriggersReplacement: types.StringNull(),
-		ExpiresAfter:        types.Int64Null(),
-		DelayedFor:          types.Int64Null(),
-		Accumulated:         outputs,
-		Outputs:             outputs,
-		DetailedOutputs:     detailed,
-		ID:                  types.StringValue(accumulate.HashID(merged)),
+		coreModel:   importedCore(detailed, accumulate.HashID(seeded)),
+		Inputs:      inputs,
+		Accumulated: outputs,
+		Outputs:     outputs,
 	})...)
 }
